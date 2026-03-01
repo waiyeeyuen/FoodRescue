@@ -1,0 +1,45 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: order
+    url: http://order-service:3000
+    routes:
+      - name: order-route
+        paths: ["/orders"]
+        strip_path: true
+
+  - name: listing
+    url: http://listing-service:3000
+    routes:
+      - name: listing-route
+        paths: ["/listing"]
+        strip_path: true
+
+  - name: inventory
+    url: http://inventory-service:3000
+    routes:
+      - name: inventory-route
+        paths: ["/inventory"]
+        strip_path: true
+
+  - name: payment
+    url: http://payment-service:3000
+    routes:
+      - name: payment-route
+        paths: ["/payments"]
+        strip_path: true
+
+  - name: notification
+    url: http://notification-service:3000
+    routes:
+      - name: notification-route
+        paths: ["/notify"]
+        strip_path: true
+
+# Optional: add basic plugins later (key-auth, jwt, rate-limiting, cors, etc.)
+# plugins:
+#   - name: cors
+#     config:
+#       origins: ["*"]
+#       methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"]
