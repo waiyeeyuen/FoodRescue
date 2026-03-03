@@ -2,39 +2,45 @@ _format_version: "3.0"
 _transform: true
 
 services:
+  - name: frontend
+    url: http://frontend:80
+    routes:
+      - name: frontend-root
+        paths: ["/"]
+        strip_path: false
   - name: order
     url: http://order-service:3000
     routes:
       - name: order-route
-        paths: ["/orders"]
+        paths: ["/api/orders"]
         strip_path: true
 
   - name: listing
     url: http://listing-service:3000
     routes:
       - name: listing-route
-        paths: ["/listing"]
+        paths: ["/api/listing"]
         strip_path: true
 
   - name: inventory
     url: http://inventory-service:3000
     routes:
       - name: inventory-route
-        paths: ["/inventory"]
+        paths: ["/api/inventory"]
         strip_path: true
 
   - name: payment
     url: http://payment-service:3000
     routes:
       - name: payment-route
-        paths: ["/payments"]
+        paths: ["/api/payments"]
         strip_path: true
 
   - name: notification
     url: http://notification-service:3000
     routes:
       - name: notification-route
-        paths: ["/notify"]
+        paths: ["/api/notify"]
         strip_path: true
 
 # Optional: add basic plugins later (key-auth, jwt, rate-limiting, cors, etc.)
