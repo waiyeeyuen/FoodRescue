@@ -24,7 +24,11 @@ services:
       - "5672:5672"
       - "15672:15672"
     networks: [internal]
-
+  frontend:
+    build: ./apps/frontend
+    networks: [internal]
+    depends_on: [kong]
+    
   order-service:
     build: ./services/order-service
     depends_on: [rabbitmq]
