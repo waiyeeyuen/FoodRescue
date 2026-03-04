@@ -3,10 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node main.js"
   },
   "dependencies": {
     "amqplib": "^0.10.4",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "firebase-admin": "^13.7.0"
   }
 }
