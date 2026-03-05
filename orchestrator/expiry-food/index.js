@@ -3,7 +3,7 @@ const app = express();
 
 app.use(express.json());
 
-app.delete('/expiry', (req, res) => {
+app.delete('/', (req, res) => {
     console.log("Expiry orchestrator hit!");
     
     res.status(200).json({ 

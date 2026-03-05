@@ -3,7 +3,7 @@ const app = express();
 
 app.use(express.json());
 
-app.get('/recommend', (req, res) => {
+app.get('/', (req, res) => {
     console.log("Recommendation orchestrator hit!");
     
     res.status(200).json({ 

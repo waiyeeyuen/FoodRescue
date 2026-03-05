@@ -3,7 +3,7 @@ const app = express();
 
 app.use(express.json());
 
-app.post('/checkout', (req, res) => {
+app.post('/', (req, res) => {
     console.log("Checkout orchestrator hit!");
     console.log("Received data:", req.body);
     

@@ -4,4 +4,4 @@ WORKDIR /app
 
 COPY . .
 
-CMD ["node", "place-order.js"]
+CMD ["node", "index.js"]

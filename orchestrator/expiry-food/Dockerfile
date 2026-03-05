@@ -4,4 +4,4 @@ WORKDIR /app
 
 COPY . .
 
-CMD ["node", "expiry-food.js"]
+CMD ["node", "index.js"]

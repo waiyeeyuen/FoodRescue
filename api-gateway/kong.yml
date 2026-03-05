@@ -24,39 +24,32 @@ plugins:
         - Authorization
       credentials: true
       max_age: 3600
+
 services:
+  - name: recommendation
+    url: http://recommendation:3000
+    routes:
+      - name: recommendation-route
+        paths:
+          - /recommend
 
-- name: recommendation
-  url: http://recommendation:3000
+  - name: expiry
+    url: http://expiry:3000
+    routes:
+      - name: expiry-route
+        paths:
+          - /expiry
 
-- name: expiry
-  url: http://expiry:3000
+  - name: checkout
+    url: http://checkout:3000
+    routes:
+      - name: checkout-route
+        paths:
+          - /checkout
 
-- name: checkout
-  url: http://checkout:3000
-
-- name: place-order
-  url: http://place-order:3000
-
-
-routes:
-
-- name: recommendation-route
-  service: recommendation
-  paths:
-    - /recommend
-
-- name: expiry-route
-  service: expiry
-  paths:
-    - /expiry
-
-- name: checkout-route
-  service: checkout
-  paths:
-    - /checkout
-
-- name: place-order-route
-  service: place-order
-  paths:
-    - /place-order
+  - name: place-order
+    url: http://place-order:3000
+    routes:
+      - name: place-order-route
+        paths:
+          - /place-order

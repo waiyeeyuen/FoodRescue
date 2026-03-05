@@ -73,6 +73,7 @@ function App() {
       <h2>API Response:</h2>
       <pre style={{ 
         backgroundColor: '#f4f4f4', 
+        color: 'black',
         padding: '15px', 
         borderRadius: '5px',
         minHeight: '100px',

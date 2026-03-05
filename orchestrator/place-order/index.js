@@ -3,7 +3,7 @@ const app = express();
 
 app.use(express.json());
 
-app.post('/place-order', (req, res) => {
+app.post('/', (req, res) => {
     console.log("Place Order orchestrator hit!");
     console.log("Received data:", req.body);
     
