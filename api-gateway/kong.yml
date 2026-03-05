@@ -1,0 +1,38 @@
+_format_version: "3.0"
+
+services:
+
+- name: recommendation
+  url: http://recommendation:3000
+
+- name: expiry
+  url: http://expiry:3000
+
+- name: checkout
+  url: http://checkout:3000
+
+- name: place-order
+  url: http://place-order:3000
+
+
+routes:
+
+- name: recommendation-route
+  service: recommendation
+  paths:
+    - /recommend
+
+- name: expiry-route
+  service: expiry
+  paths:
+    - /expiry
+
+- name: checkout-route
+  service: checkout
+  paths:
+    - /checkout
+
+- name: place-order-route
+  service: place-order
+  paths:
+    - /place-order
