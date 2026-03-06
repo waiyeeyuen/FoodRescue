@@ -5,8 +5,15 @@ services:
   recommendation-service:
     build: ./services/recommendation-service
 
+  orchestrator-service:
+    build: ./services/orchestrator-service
+    port: 
+      - "8001:8001"
+      
   inventory-service:
     build: ./services/inventory-service
+    ports:
+      - "3000:3000"
 
   payment-service:
     build: ./services/payment-service

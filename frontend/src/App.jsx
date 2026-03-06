@@ -13,7 +13,7 @@ function App() {
     try {
       setResponse("Loading recommendations...")
       // Update the URL path to match your kong.yml route
-      const res = await axios.get(`${KONG_URL}/recommend`) 
+      const res = await axios.get(`${KONG_URL}/inventory`) 
       setResponse(JSON.stringify(res.data, null, 2))
     } catch (error) {
       setResponse(error.message + "\n\n(Check if the route exists in kong.yml)")

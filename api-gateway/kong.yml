@@ -26,30 +26,13 @@ plugins:
       max_age: 3600
 
 services:
-  - name: recommendation
-    url: http://recommendation:3000
+  - name: orchestrator
+    url: http://orchestrator:8001
     routes:
-      - name: recommendation-route
+      - name: orchestrator-route
         paths:
-          - /recommend
-
-  - name: expiry
-    url: http://expiry:3000
-    routes:
-      - name: expiry-route
-        paths:
+          - /order
           - /expiry
-
-  - name: checkout
-    url: http://checkout:3000
-    routes:
-      - name: checkout-route
-        paths:
+          - /recommend
           - /checkout
-
-  - name: place-order
-    url: http://place-order:3000
-    routes:
-      - name: place-order-route
-        paths:
-          - /place-order
+ 
