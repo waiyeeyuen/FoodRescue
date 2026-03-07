@@ -1,6 +1,6 @@
 // senders.js
 import twilio from 'twilio';
-import { messaging } from './firebaseAdmin.js';
+import { messaging } from '../firebase/firebaseAdmin.js';
 import dotenv from 'dotenv';
 dotenv.config();
 

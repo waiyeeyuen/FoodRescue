@@ -3,7 +3,7 @@ import express from 'express';
 import { connectRabbitMQ, getChannel } from './rabbitmq.js';
 import { handleEvent } from './handler.js';
 import { sendNotification } from './sender.js';
-import { db } from './firebaseAdmin.js';
+import { db } from '../firebase/firebaseAdmin.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -20,7 +20,7 @@ async function startConsumer() {
       
       // Send notification
       const status = await sendNotification(data);
-      
+       
       // Update Firebase
       await db.collection('notifications')
         .doc(data.docId)
