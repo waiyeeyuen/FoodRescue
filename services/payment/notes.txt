@@ -1,0 +1,138 @@
+### STEP BY STEP HOW TO CHECK IF THIS IS WORKING!
+
+1. cd C:\Users\wangx\OneDrive\Documents\GitHub\FoodRescue\services\payment
+2. npm run dev
+
+Expected: Payment service listening on port 3003
+
+3. Open browser/Postman: http://localhost:3003/payments/health
+ 
+Expected: {
+  "status": "ok",
+  "service": "payment"
+}
+
+4. Open new terminal for Stripe CLI (Keep this open, it starts listening and prints webhook)
+.\stripe listen --forward-to localhost:3003/payments/webhook 
+
+Note: (This will depend on the path of your Stripe ClI. Xh: C:/Users/wangx)
+
+5. Create Checkout session
+POST http://localhost:3003/payments/checkout-session
+Body:
+{
+  "orderId": "order_001",
+  "userId": "user_001",
+  "currency": "sgd",
+  "items": [
+    {
+      "name": "Food Rescue Meal Box",
+      "unitAmount": 500,
+      "quantity": 2
+    }
+  ]
+}
+
+Expected response:
+{
+  "paymentId": "...",
+  "status": "pending",
+  "checkoutUrl": "https://checkout.stripe.com/..."
+}
+
+5. Check payment starts as pending
+GET http://localhost:3003/payments/<paymentId>
+
+Expected Response:
+{
+  "status": "pending"
+}
+
+6. Step 6. Open the checkout URL Use Test Card 4242 4242 4242 4242 
+Submit Payment
+
+7. After payment, the payment service terminal should log something like: Payment completed
+
+Stripe CLI terminal should show it forwarded event to my webhook endpoint and got a success response.
+That confirms Stripe → webhook path is working.
+
+9. Check payment status again
+GET http://localhost:3003/payments/<paymentId>
+{
+  "status": "paid"
+}
+
+
+### Current End Points
+
+1. Health Check
+GET /payments/health
+
+Expected response:
+{
+  "status": "ok",
+  "service": "payment"
+}
+
+2. Create checkout session
+POST /payments/checkout-session
+Body Example:
+{
+  "orderId": "order_001",
+  "userId": "user_001",
+  "currency": "sgd",
+  "items": [
+    {
+      "name": "Food Rescue Meal Box",
+      "unitAmount": 500,
+      "quantity": 2
+    }
+  ]
+}
+
+Expected response:
+{
+  "paymentId": "some-uuid",
+  "status": "pending",
+  "checkoutUrl": "https://checkout.stripe.com/..."  < THIS WILL BE THE LINK FOR USER TO PAY
+}
+
+3. Get Payment (1 only)
+GET /payments/:paymentId
+
+4. Get All Payment
+GET /payments
+
+4. Stripe webhook
+POST /payments/webhook
+(Called by stripe not me)
+
+
+
+2. Folder Notes
+
+.env
+stores port, Stripe secret key, webhook secret, frontend redirect URLs
+
+package.json
+stores dependencies and scripts
+
+index.js
+main entry point, starts Express server, mounts routes, defines webhook route
+
+routes/paymentRoutes.js
+declares payment-related endpoints
+
+controllers/paymentController.js
+contains route logic like create session, get payment, webhook handler
+
+services/stripeService.js
+contains Stripe SDK logic
+
+data/paymentStore.js
+temporary in-memory Map to store payment records
+
+utils/config.js
+loads env variables using dotenv
+
+
