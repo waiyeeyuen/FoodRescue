@@ -1,7 +1,16 @@
-import { v4 as uuidv4 } from "uuid";
-import { payments } from "../data/paymentStore.js";
-import { config } from "../utils/config.js";
-import { createStripeCheckoutSession, stripe } from "../services/stripeService.js";
+//PaymentController.js is responsible for handling requests that come in from routes.
+
+// Route receives request
+// → controller function runs
+// → controller validates input
+// → controller calls service / data store
+// → controller sends response
+
+import { v4 as uuidv4 } from "uuid"; // generates a unique ID.
+import { payments } from "../data/paymentStore.js"; // in-memory payment store (If using)
+import { config } from "../utils/config.js"; // Environment .env files access
+import { createStripeCheckoutSession, stripe } from "../services/stripeService.js"; 
+// A helper/service function that talks to Stripe and creates the checkout session
 
 export function healthCheck(req, res) {
   res.json({
@@ -29,8 +38,9 @@ export function getPaymentById(req, res) {
 }
 
 export async function createCheckoutSession(req, res) {
+  // Check req.body for all required parameters. 
   try {
-    const { orderId, userId, items, currency, successUrl, cancelUrl } = req.body;
+    const { orderId, userId, items, currency, successUrl, cancelUrl } = req.body; 
 
     if (!orderId || !userId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
@@ -46,11 +56,13 @@ export async function createCheckoutSession(req, res) {
       }
     }
 
+    // Make random payment id
     const paymentId = uuidv4();
 
     const finalSuccessUrl =
       successUrl ||
       `${config.frontendSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`;
+      // If request provides a successUrl, use it. Otherwise use default from config.
 
     const finalCancelUrl = cancelUrl || config.frontendCancelUrl;
 
@@ -80,9 +92,9 @@ export async function createCheckoutSession(req, res) {
 
     payments.set(paymentId, paymentRecord);
 
-    res.status(201).json({
+    res.status(201).json({ //return of json request
       paymentId,
-      status: "pending",
+      status: "pending", // This is important because later webhook will come back and update that record
       checkoutUrl: session.url
     });
   } catch (error) {
@@ -95,11 +107,11 @@ export async function createCheckoutSession(req, res) {
 }
 
 export function handleStripeWebhook(req, res) {
-  const signature = req.headers["stripe-signature"];
+  const signature = req.headers["stripe-signature"]; //Stripe sends a special header containing a signed value.
 
   let event;
 
-  try {
+  try { // verify webhook signature . Checks raw request body, received signature, your webhook secret if all match trust stripe event
     event = stripe.webhooks.constructEvent(
       req.body,
       signature,
@@ -113,17 +125,20 @@ export function handleStripeWebhook(req, res) {
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        const session = event.data.object;
+        const session = event.data.object; // event.data.object contains the actual Stripe session.
         const paymentId = session.metadata?.paymentId;
+        //Stripe session was probably created with metadata including your internal payment ID.
+        //That is how Stripe event gets mapped back to your local payment record.
 
         if (paymentId && payments.has(paymentId)) {
-          const existing = payments.get(paymentId);
+          const existing = payments.get(paymentId); 
+          //If the payment exists in store, retrieve old record, overwrite it with updated fields
 
           payments.set(paymentId, {
             ...existing,
-            status: "paid",
+            status: "paid", // Change status
             stripePaymentIntentId: session.payment_intent || null,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString() //Updated 
           });
         }
 
@@ -131,7 +146,7 @@ export function handleStripeWebhook(req, res) {
         break;
       }
 
-      case "checkout.session.expired": {
+      case "checkout.session.expired": { //Similarly this is if checkout session expired
         const session = event.data.object;
         const paymentId = session.metadata?.paymentId;
 
@@ -153,7 +168,7 @@ export function handleStripeWebhook(req, res) {
         console.log(`Unhandled event type: ${event.type}`);
     }
 
-    res.json({ received: true });
+    res.json({ received: true }); // Tells stripe webhook has been received, Important because Stripe expects a success response.
   } catch (error) {
     console.error("Error handling webhook:", error.message);
     res.status(500).json({

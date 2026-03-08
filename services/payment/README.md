@@ -12,6 +12,7 @@ Node.js (v18 or above recommended)
 npm
 Stripe CLI
 Stripe account (for API keys)
+npm install stripe
 
 
 Create a .env file in the payment service directory.
