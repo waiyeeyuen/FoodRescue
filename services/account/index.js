@@ -14,46 +14,46 @@ const corsOptions = {
 app.use(cors(corsOptions))
 app.use(express.json())
 
-const RESTAURANTS = db.collection('restaurants')
+const USERS = db.collection('users')
 const JWT_SECRET = process.env.JWT_SECRET || 'foodrescue-secret' // Use env variable in production
 
-// Register a new restaurant account
+// Register a new user account
 app.post('/account/register', async (req, res) => {
   try {
-    const { email, password, restaurantName } = req.body;
+    const { username, email, password } = req.body;
 
-    if (!email || !password || !restaurantName) {
+    if (!username || !email || !password) {
       return res.status(400).json({ error: 'Missing fields' }); // All fields are required
     }
 
     // Check if email is already registered
-    const existing = await RESTAURANTS.where('email', '==', email).get();
+    const existing = await USERS.where('email', '==', email).get();
     if (!existing.empty) {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10); // Hash password before storing
 
-    const newRestaurant = {
+    const newUser = {
+      username,
       email,
       password: hashedPassword,
-      restaurantName,
       createdAt: new Date()
     };
 
-    const docRef = await RESTAURANTS.add(newRestaurant);
+    const docRef = await USERS.add(newUser);
 
     // Return token so the user is immediately logged in after registering
-    const token = jwt.sign({ id: docRef.id, email, restaurantName }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: docRef.id, email, username }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.status(201).json({ token, restaurant: { id: docRef.id, email, restaurantName } });
+    res.status(201).json({ token, user: { id: docRef.id, username, email } });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Login to an existing restaurant account
+// Login to an existing user account
 app.post('/account/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -62,38 +62,38 @@ app.post('/account/login', async (req, res) => {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
-    // Find restaurant by email
-    const snapshot = await RESTAURANTS.where('email', '==', email).get();
+    // Find user by email
+    const snapshot = await USERS.where('email', '==', email).get();
     if (snapshot.empty) {
       return res.status(401).json({ error: 'Invalid email or password' }); // Generic message to avoid enumeration
     }
 
     const doc = snapshot.docs[0];
-    const restaurant = doc.data();
+    const user = doc.data();
 
-    const passwordMatch = await bcrypt.compare(password, restaurant.password); // Verify hashed password
+    const passwordMatch = await bcrypt.compare(password, user.password); // Verify hashed password
     if (!passwordMatch) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Sign JWT with restaurant identity
+    // Sign JWT with user identity
     const token = jwt.sign(
-      { id: doc.id, email: restaurant.email, restaurantName: restaurant.restaurantName },
+      { id: doc.id, email: user.email, username: user.username },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({ token, restaurant: { id: doc.id, email: restaurant.email, restaurantName: restaurant.restaurantName } });
+    res.json({ token, user: { id: doc.id, username: user.username, email: user.email } });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get a restaurant account by ID
+// Get a user account by ID
 app.get('/account/:id', async (req, res) => {
   try {
-    const doc = await RESTAURANTS.doc(req.params.id).get();
+    const doc = await USERS.doc(req.params.id).get();
 
     if (!doc.exists) {
       return res.status(404).json({ error: 'Not found' });

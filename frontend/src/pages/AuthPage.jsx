@@ -52,20 +52,17 @@ function AuthPage() {
   const navigate = useNavigate();
 
   const [mode, setMode] = useState("login"); // "login" | "register"
-  const [registerType, setRegisterType] = useState("user"); // "user" | "restaurant"
 
   const [form, setForm] = useState({
+    username: "",
     email: "",
     password: "",
-    name: "",
-    restaurantName: "",
   });
 
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   const isLogin = mode === "login";
-  const isRestaurant = registerType === "restaurant";
 
   const title = useMemo(
     () => (isLogin ? "Welcome back" : "Create your account"),
@@ -76,17 +73,7 @@ function AuthPage() {
     setMode(next);
     setError(null);
     setSubmitting(false);
-    setRegisterType("user");
-    setForm({ email: "", password: "", name: "", restaurantName: "" });
-  };
-
-  const setType = (type) => {
-    setRegisterType(type);
-    setError(null);
-    setForm((f) => ({
-      ...f,
-      restaurantName: type === "restaurant" ? f.restaurantName : "",
-    }));
+    setForm({ username: "", email: "", password: "" });
   };
 
   const handleSubmit = async (e) => {
@@ -98,14 +85,7 @@ function AuthPage() {
       if (isLogin) {
         await login({ email: form.email, password: form.password });
       } else {
-        const payload = {
-          email: form.email,
-          password: form.password,
-          role: registerType, // "user" | "restaurant"
-          name: form.name,
-          restaurantName: isRestaurant ? form.restaurantName : undefined,
-        };
-        await register(payload);
+        await register({ username: form.username, email: form.email, password: form.password });
       }
 
       navigate("/");
@@ -134,7 +114,7 @@ function AuthPage() {
 
           <h1 className="mt-4 text-2xl font-bold text-slate-900">{title}</h1>
           <p className="mt-1 text-sm text-slate-600">
-            {isLogin ? "Sign in to continue." : "Register as a normal user or a restaurant."}
+            {isLogin ? "Sign in to continue." : "Create a new account."}
           </p>
         </div>
 
@@ -315,78 +295,24 @@ function AuthPage() {
                     <div>
                       <h2 className="text-xl font-bold text-slate-900">Create account</h2>
                       <p className="mt-1 text-sm text-slate-600">
-                        Pick an account type and sign up.
+                        Fill in your details to sign up.
                       </p>
-                    </div>
-
-                    {/* Register */}
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-2">
-                        Register as
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setType("user")}
-                          aria-pressed={!isRestaurant}
-                          className={[
-                            "rounded-xl px-3 py-2 text-sm font-semibold ring-1 transition",
-                            !isRestaurant
-                              ? "bg-slate-900 text-white ring-slate-900"
-                              : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 hover:cursor-pointer",
-                          ].join(" ")}
-                        >
-                          User
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setType("restaurant")}
-                          aria-pressed={isRestaurant}
-                          className={[
-                            "rounded-xl px-3 py-2 text-sm font-semibold ring-1 transition",
-                            isRestaurant
-                              ? "bg-slate-900 text-white ring-slate-900"
-                              : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 hover:cursor-pointer",
-                          ].join(" ")}
-                        >
-                          Restaurant
-                        </button>
-                      </div>
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-slate-700">
-                        {isRestaurant ? "Contact name" : "Name"}
+                        Username
                       </label>
                       <input
                         type="text"
-                        autoComplete="name"
-                        value={form.name}
-                        onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                        placeholder={isRestaurant ? "Jane (manager)" : "Jane Doe"}
+                        autoComplete="username"
+                        value={form.username}
+                        onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
+                        placeholder="janedoe"
                         className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-slate-200"
                         required
                       />
                     </div>
-
-                    {isRestaurant && (
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700">
-                          Restaurant name
-                        </label>
-                        <input
-                          type="text"
-                          value={form.restaurantName}
-                          onChange={(e) =>
-                            setForm((f) => ({ ...f, restaurantName: e.target.value }))
-                          }
-                          placeholder="e.g. Warung Makan"
-                          className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-slate-200"
-                          required
-                        />
-                      </div>
-                    )}
 
                     <div>
                       <label className="block text-sm font-medium text-slate-700">

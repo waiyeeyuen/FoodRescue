@@ -1,119 +1,74 @@
 import express from 'express'
 import cors from 'cors'
-import {db} from '../firebase/firebaseAdmin.js'
 
 const app = express()
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET"],
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 app.use(cors(corsOptions))
 app.use(express.json())
 
-const INVENTORY = db.collection('inventory')
+const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
-// Get all inventory items
-app.get('/inventory', async (req, res) => {
+// Get all active listings
+app.get('/inventory/active', async (req, res) => {
   try {
-    const snapshot = await INVENTORY.get();
-
-    const response = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
-
-    res.json(response);
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-})
-
-// Get specific inventory item
-app.get("/inventory/:id", async (req, res) => {
-  try {
-    const doc = await INVENTORY.doc(req.params.id).get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: "Not found" });
+    const response = await fetch(`${OUTSYSTEMS_BASE}/GetActiveListing`);
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Failed to fetch active listings' });
     }
-
-    res.json({
-      id: doc.id,
-      ...doc.data()
-    });
-
+    const data = await response.json();
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Post a new inventory item
-app.post("/inventory", async (req, res) => {
+// Get listings by restaurant ID
+app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
   try {
-    const { name, quantity, supplier } = req.body;
-
-    if (!name || !quantity || !supplier) {
-      return res.status(400).json({ error: "Missing fields" });
+    const { restaurantId } = req.params;
+    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurant?restaurantId=${encodeURIComponent(restaurantId)}`);
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Failed to fetch restaurant listings' });
     }
-
-    const expiry = new Date(Date.now() + 5 * 60 * 60 * 1000);
-
-    const newItem = {
-      name,
-      quantity,
-      supplier,
-      expiry
-    };
-
-    const docRef = await INVENTORY.add(newItem);
-
-    res.status(201).json({ id: docRef.id, ...newItem });
-
+    const data = await response.json();
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Update an inventory item
-app.put("/inventory/:id", async (req, res) => {
+// Get listings by item name
+app.get('/inventory/search/item', async (req, res) => {
   try {
-    const docRef = INVENTORY.doc(req.params.id);
-    const doc = await docRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: "Not found" });
+    const { itemName } = req.query;
+    if (!itemName) return res.status(400).json({ error: 'itemName is required' });
+    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByItemName?itemName=${encodeURIComponent(itemName)}`);
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Failed to fetch listings by item name' });
     }
-
-    const { name, quantity, supplier } = req.body;
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (quantity !== undefined) updates.quantity = quantity;
-    if (supplier !== undefined) updates.supplier = supplier;
-
-    await docRef.update(updates);
-    res.json({ id: req.params.id, ...doc.data(), ...updates });
-
+    const data = await response.json();
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Delete an inventory item
-app.delete("/inventory/:id", async (req, res) => {
+// Get listings by restaurant name
+app.get('/inventory/search/restaurant-name', async (req, res) => {
   try {
-    const docRef = INVENTORY.doc(req.params.id);
-    const doc = await docRef.get();
-    
-    if (!doc.exists) {
-      return res.status(404).json({ error: "Not found" }); 
+    const { restaurantName } = req.query;
+    if (!restaurantName) return res.status(400).json({ error: 'restaurantName is required' });
+    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurantName?restaurantName=${encodeURIComponent(restaurantName)}`);
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Failed to fetch listings by restaurant name' });
     }
-
-    await docRef.delete();
-    res.json({ message: "Deleted successfully" }); 
-
+    const data = await response.json();
+    res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -122,5 +77,5 @@ app.delete("/inventory/:id", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Inventory service running on port ${PORT}`);
 });
