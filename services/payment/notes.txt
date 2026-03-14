@@ -5,7 +5,7 @@
 
 Expected: Payment service listening on port 3003
 
-3. Open browser/Postman: http://localhost:3003/payments/health
+3. Open browser/Postman GET: http://localhost:3003/payments/health
  
 Expected: {
   "status": "ok",
@@ -60,15 +60,11 @@ That confirms Stripe → webhook path is working.
 
 9. Check payment status again (Can check DB that staus updates too)
 GET http://localhost:3003/payments/<paymentId>
-{
+{ Very long.. but have this line Status: xxxx
   "status": "paid"
 }
 
-10. Make sure payment status is already paid first
-Use the same paymentId from the successful payment flow 
-GET http://localhost:3003/payments/<paymentId>
-
-11. Trigger refund 
+10. Trigger refund 
 POST http://localhost:3003/payments/<paymentId>/refund
 
 Body (Full Refund): 
@@ -92,10 +88,14 @@ Expected Result (Can check DB Firebase)
 }
 
 For Partial
-"status": "partially_refunded"
+"status": "partially_refunded" Initially 
+BUT - Webhook will override it with refunded
+
+Expected Result therefore will always be refunded. (Step 11 will confirm this, Different output from 10
+as 10 will show partially_refunded but 11 will be refunded)
 
 
-12. Check payment status again
+11. Check payment status again
 
 GET http://localhost:3003/payments/<paymentId>
 
@@ -104,7 +104,7 @@ Expected:
   "status": "refunded"
 }
 
-13. Check all payments
+12. Check all payments
 GET http://localhost:3003/payments
 (IN DB)
 
