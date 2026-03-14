@@ -38,7 +38,7 @@ function validateOrderData(data) {
 // CREATE ORDER
 app.post('/orders', async (req, res) => {
   try {
-    const { customerId, items, totalPrice, notes } = req.body;
+    const { customerId, items, totalPrice } = req.body;
     
     // Validate input
     const errors = validateOrderData({ customerId, items, totalPrice });
@@ -54,16 +54,7 @@ app.post('/orders', async (req, res) => {
       customerId,
       items,
       totalPrice,
-      notes: notes || '',
-      createdAt: now,
-      updatedAt: now,
-      events: [
-        {
-          type: 'created',
-          timestamp: now,
-          details: 'Order created'
-        }
-      ]
+      createdAt: now
     };
 
     await ORDERS.doc(orderId).set(orderData);
@@ -99,8 +90,7 @@ app.get('/orders', async (req, res) => {
     const allOrders = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
-      createdAt: doc.data().createdAt?.toDate?.() || doc.data().createdAt,
-      updatedAt: doc.data().updatedAt?.toDate?.() || doc.data().updatedAt
+      createdAt: doc.data().createdAt?.toDate?.() || doc.data().createdAt
     }));
 
     // Apply pagination
@@ -139,8 +129,7 @@ app.get('/orders/:orderId', async (req, res) => {
       order: {
         id: doc.id,
         ...orderData,
-        createdAt: orderData.createdAt?.toDate?.() || orderData.createdAt,
-        updatedAt: orderData.updatedAt?.toDate?.() || orderData.updatedAt
+        createdAt: orderData.createdAt?.toDate?.() || orderData.createdAt
       }
     });
 
