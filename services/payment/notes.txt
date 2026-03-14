@@ -16,8 +16,10 @@ Expected: {
 .\stripe listen --forward-to localhost:3003/payments/webhook 
 
 Note: (This will depend on the path of your Stripe ClI. Xh: C:/Users/wangx)
+You will get an output of whsec_xxxxxxxxx 
+Copy and updated .env file - STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxx
 
-5. Create Checkout session
+5. Create Checkout session (Here can check Firebase DB that a new order created)
 POST http://localhost:3003/payments/checkout-session
 Body:
 {
@@ -56,11 +58,57 @@ Submit Payment
 Stripe CLI terminal should show it forwarded event to my webhook endpoint and got a success response.
 That confirms Stripe → webhook path is working.
 
-9. Check payment status again
+9. Check payment status again (Can check DB that staus updates too)
 GET http://localhost:3003/payments/<paymentId>
 {
   "status": "paid"
 }
+
+10. Make sure payment status is already paid first
+Use the same paymentId from the successful payment flow 
+GET http://localhost:3003/payments/<paymentId>
+
+11. Trigger refund 
+POST http://localhost:3003/payments/<paymentId>/refund
+
+Body (Full Refund): 
+{
+  "reason": "inventory_conflict"
+}
+
+Body (Partial Refund (Might not be used) )
+{
+  "amount": 500,
+  "reason": "inventory_conflict"
+}
+
+Expected Result (Can check DB Firebase)
+{
+  "message": "Refund processed successfully",
+  "payment": {
+    "paymentId": "...",
+    "status": "refunded"
+  }
+}
+
+For Partial
+"status": "partially_refunded"
+
+
+12. Check payment status again
+
+GET http://localhost:3003/payments/<paymentId>
+
+Expected:
+{
+  "status": "refunded"
+}
+
+13. Check all payments
+GET http://localhost:3003/payments
+(IN DB)
+
+
 
 
 ### Current End Points
@@ -109,10 +157,30 @@ POST /payments/webhook
 
 
 
-2. Folder Notes
+2. Folder Structure
+
+payment/
+│
+├── .env
+├── package.json
+├── index.js
+│
+├── routes/
+│   └── paymentRoutes.js
+│
+├── controllers/
+│   └── paymentController.js
+│
+├── services/
+│   ├── stripeService.js
+│   ├── firebaseService.js
+│   └── paymentRepository.js
+│
+└── utils/
+    └── config.js
 
 .env
-stores port, Stripe secret key, webhook secret, frontend redirect URLs
+stores port, Stripe secret key, webhook secret, frontend redirect URLs, firebaseservice key
 
 package.json
 stores dependencies and scripts
@@ -121,16 +189,21 @@ index.js
 main entry point, starts Express server, mounts routes, defines webhook route
 
 routes/paymentRoutes.js
-declares payment-related endpoints
+declares payment-related API endpoints such as health check, create checkout session, 
+refund payment, and get payment
 
 controllers/paymentController.js
-contains route logic like create session, get payment, webhook handler
+contains route logic such as creating Stripe checkout sessions, retrieving payments,
+processing refunds, and handling Stripe webhook events
 
 services/stripeService.js
-contains Stripe SDK logic
+contains Stripe SDK logic for checkout process and refund logic
 
-data/paymentStore.js
-temporary in-memory Map to store payment records
+services/firebaseService.js
+initializes Firebase Admin SDK and connects the payment service to Firestore
+
+services/paymentRepository.js
+handles database operations for payments such as creating, retrieving, and updating payment records
 
 utils/config.js
 loads env variables using dotenv

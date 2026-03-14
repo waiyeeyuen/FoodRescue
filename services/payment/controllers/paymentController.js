@@ -1,16 +1,24 @@
-//PaymentController.js is responsible for handling requests that come in from routes.
+import { v4 as uuidv4 } from "uuid";
+import { admin } from "../services/firebaseService.js";
+import {
+  createPayment,
+  getAllPaymentsFromDb,
+  getPaymentByIdFromDb,
+  updatePayment,
+  createOrUpdatePayment
+} from "../services/paymentRepository.js";
+import {
+  createStripeCheckoutSession,
+  createStripeRefund,
+  stripe
+} from "../services/stripeService.js";
+import { config } from "../utils/config.js";
 
-// Route receives request
-// → controller function runs
-// → controller validates input
-// → controller calls service / data store
-// → controller sends response
-
-import { v4 as uuidv4 } from "uuid"; // generates a unique ID.
-import { payments } from "../data/paymentStore.js"; // in-memory payment store (If using)
-import { config } from "../utils/config.js"; // Environment .env files access
-import { createStripeCheckoutSession, stripe } from "../services/stripeService.js"; 
-// A helper/service function that talks to Stripe and creates the checkout session
+function calculateAmountTotal(items) {
+  return items.reduce((sum, item) => {
+    return sum + item.unitAmount * item.quantity;
+  }, 0);
+}
 
 export function healthCheck(req, res) {
   res.json({
@@ -19,28 +27,41 @@ export function healthCheck(req, res) {
   });
 }
 
-export function getAllPayments(req, res) {
-  const allPayments = Array.from(payments.values());
-  res.json(allPayments);
-}
-
-export function getPaymentById(req, res) {
-  const { paymentId } = req.params;
-  const payment = payments.get(paymentId);
-
-  if (!payment) {
-    return res.status(404).json({
-      error: "Payment not found"
+export async function getAllPayments(req, res) {
+  try {
+    const allPayments = await getAllPaymentsFromDb();
+    res.json(allPayments);
+  } catch (error) {
+    console.error("Error getting all payments:", error.message);
+    res.status(500).json({
+      error: "Failed to fetch payments"
     });
   }
+}
 
-  res.json(payment);
+export async function getPaymentById(req, res) {
+  try {
+    const { paymentId } = req.params;
+    const payment = await getPaymentByIdFromDb(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({
+        error: "Payment not found"
+      });
+    }
+
+    res.json(payment);
+  } catch (error) {
+    console.error("Error getting payment by ID:", error.message);
+    res.status(500).json({
+      error: "Failed to fetch payment"
+    });
+  }
 }
 
 export async function createCheckoutSession(req, res) {
-  // Check req.body for all required parameters. 
   try {
-    const { orderId, userId, items, currency, successUrl, cancelUrl } = req.body; 
+    const { orderId, userId, items, currency, successUrl, cancelUrl } = req.body;
 
     if (!orderId || !userId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
@@ -56,13 +77,10 @@ export async function createCheckoutSession(req, res) {
       }
     }
 
-    // Make random payment id
     const paymentId = uuidv4();
 
     const finalSuccessUrl =
-      successUrl ||
-      `${config.frontendSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`;
-      // If request provides a successUrl, use it. Otherwise use default from config.
+      successUrl || `${config.frontendSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`;
 
     const finalCancelUrl = cancelUrl || config.frontendCancelUrl;
 
@@ -76,25 +94,36 @@ export async function createCheckoutSession(req, res) {
       cancelUrl: finalCancelUrl
     });
 
+    const amountTotal = calculateAmountTotal(items);
+
     const paymentRecord = {
       paymentId,
       orderId,
       userId,
       status: "pending",
       currency: currency || "sgd",
+      amountTotal,
       items,
       stripeSessionId: session.id,
       stripePaymentIntentId: null,
       checkoutUrl: session.url,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      source: "stripe_checkout",
+      webhookEventType: "",
+      refundStatus: "not_requested",
+      refundId: "",
+      refundAmount: 0,
+      refundReason: "",
+      refundRequestedAt: null,
+      refundCompletedAt: null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
 
-    payments.set(paymentId, paymentRecord);
+    await createPayment(paymentRecord);
 
-    res.status(201).json({ //return of json request
+    res.status(201).json({
       paymentId,
-      status: "pending", // This is important because later webhook will come back and update that record
+      status: "pending",
       checkoutUrl: session.url
     });
   } catch (error) {
@@ -106,12 +135,78 @@ export async function createCheckoutSession(req, res) {
   }
 }
 
-export function handleStripeWebhook(req, res) {
-  const signature = req.headers["stripe-signature"]; //Stripe sends a special header containing a signed value.
+export async function refundPayment(req, res) {
+  try {
+    const { paymentId } = req.params;
+    const { amount, reason } = req.body;
 
+    const payment = await getPaymentByIdFromDb(paymentId);
+
+    if (!payment) {
+      return res.status(404).json({
+        error: "Payment not found"
+      });
+    }
+
+    if (payment.status !== "paid" && payment.status !== "partially_refunded") {
+      return res.status(400).json({
+        error: "Only paid or partially refunded payments can be refunded"
+      });
+    }
+
+    if (!payment.stripePaymentIntentId) {
+      return res.status(400).json({
+        error: "Missing Stripe payment intent ID"
+      });
+    }
+
+    if (payment.refundStatus === "pending") {
+      return res.status(400).json({
+        error: "Refund is already pending"
+      });
+    }
+
+    await updatePayment(paymentId, {
+      refundStatus: "pending",
+      refundReason: reason || "",
+      refundRequestedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const refund = await createStripeRefund({
+      paymentIntentId: payment.stripePaymentIntentId,
+      amount: amount || undefined,
+      reason: reason || undefined
+    });
+
+    const fullRefund = !amount || amount >= payment.amountTotal;
+
+    const updatedPayment = await updatePayment(paymentId, {
+      status: fullRefund ? "refunded" : "partially_refunded",
+      refundStatus: refund.status || "succeeded",
+      refundId: refund.id,
+      refundAmount: amount || payment.amountTotal,
+      refundReason: reason || "",
+      refundCompletedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      message: "Refund processed successfully",
+      payment: updatedPayment
+    });
+  } catch (error) {
+    console.error("Error refunding payment:", error.message);
+    res.status(500).json({
+      error: "Failed to refund payment",
+      details: error.message
+    });
+  }
+}
+
+export async function handleStripeWebhook(req, res) {
+  const signature = req.headers["stripe-signature"];
   let event;
 
-  try { // verify webhook signature . Checks raw request body, received signature, your webhook secret if all match trust stripe event
+  try {
     event = stripe.webhooks.constructEvent(
       req.body,
       signature,
@@ -125,20 +220,15 @@ export function handleStripeWebhook(req, res) {
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        const session = event.data.object; // event.data.object contains the actual Stripe session.
+        const session = event.data.object;
         const paymentId = session.metadata?.paymentId;
-        //Stripe session was probably created with metadata including your internal payment ID.
-        //That is how Stripe event gets mapped back to your local payment record.
 
-        if (paymentId && payments.has(paymentId)) {
-          const existing = payments.get(paymentId); 
-          //If the payment exists in store, retrieve old record, overwrite it with updated fields
-
-          payments.set(paymentId, {
-            ...existing,
-            status: "paid", // Change status
-            stripePaymentIntentId: session.payment_intent || null,
-            updatedAt: new Date().toISOString() //Updated 
+        if (paymentId) {
+          await createOrUpdatePayment(paymentId, {
+            webhookEventType: event.type,
+            status: "paid",
+            stripeSessionId: session.id,
+            stripePaymentIntentId: session.payment_intent || null
           });
         }
 
@@ -146,17 +236,15 @@ export function handleStripeWebhook(req, res) {
         break;
       }
 
-      case "checkout.session.expired": { //Similarly this is if checkout session expired
+      case "checkout.session.expired": {
         const session = event.data.object;
         const paymentId = session.metadata?.paymentId;
 
-        if (paymentId && payments.has(paymentId)) {
-          const existing = payments.get(paymentId);
-
-          payments.set(paymentId, {
-            ...existing,
+        if (paymentId) {
+          await createOrUpdatePayment(paymentId, {
+            webhookEventType: event.type,
             status: "expired",
-            updatedAt: new Date().toISOString()
+            stripeSessionId: session.id
           });
         }
 
@@ -164,11 +252,37 @@ export function handleStripeWebhook(req, res) {
         break;
       }
 
+      case "charge.refunded": {
+        const charge = event.data.object;
+        const paymentIntentId = charge.payment_intent;
+
+        if (paymentIntentId) {
+          // Simple approach: query by paymentIntentId is not ideal for scale,
+          // but okay for MVP if you later add index/query support.
+          const allPayments = await getAllPaymentsFromDb();
+          const matched = allPayments.find(
+            (payment) => payment.stripePaymentIntentId === paymentIntentId
+          );
+
+          if (matched) {
+            await updatePayment(matched.paymentId, {
+              webhookEventType: event.type,
+              status: "refunded",
+              refundStatus: "succeeded",
+              refundCompletedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+          }
+        }
+
+        console.log("Charge refunded");
+        break;
+      }
+
       default:
         console.log(`Unhandled event type: ${event.type}`);
     }
 
-    res.json({ received: true }); // Tells stripe webhook has been received, Important because Stripe expects a success response.
+    res.json({ received: true });
   } catch (error) {
     console.error("Error handling webhook:", error.message);
     res.status(500).json({

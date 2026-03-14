@@ -1,5 +1,3 @@
-//doing the actual communication with Stripe’s API.
-
 import Stripe from "stripe";
 import { config } from "../utils/config.js";
 
@@ -14,10 +12,6 @@ export async function createStripeCheckoutSession({
   successUrl,
   cancelUrl
 }) {
-  //Stripe SDK allows us to call StripeAPI's like
-  //stripe.checkout.sessions.create()
-  //stripe.paymentIntents.create()
-  //stripe.refunds.create()
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
     client_reference_id: orderId,
@@ -25,8 +19,6 @@ export async function createStripeCheckoutSession({
       paymentId,
       orderId,
       userId
-      //Metadata is extra information you attach to the Stripe object.
-      //Stripe stores it and returns it in webhook events.
     },
     line_items: items.map((item) => ({
       price_data: {
@@ -43,4 +35,23 @@ export async function createStripeCheckoutSession({
   });
 
   return session;
+}
+
+export async function createStripeRefund({ paymentIntentId, amount, reason }) {
+  const refundPayload = {
+    payment_intent: paymentIntentId
+  };
+
+  if (amount) {
+    refundPayload.amount = amount;
+  }
+
+  if (reason) {
+    refundPayload.metadata = {
+      reason
+    };
+  }
+
+  const refund = await stripe.refunds.create(refundPayload);
+  return refund;
 }
