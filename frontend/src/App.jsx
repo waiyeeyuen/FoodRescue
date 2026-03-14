@@ -6,9 +6,9 @@ import InventoryPage from './pages/InventoryPage';
 
 // Redirect unauthenticated users to the login page
 function ProtectedRoute({ children }) {
-  const { restaurant, loading } = useAuth();
+  const { user, loading } = useAuth();
   if (loading) return null; // Wait for session to be restored before rendering
-  return restaurant ? children : <Navigate to='/auth' replace />;
+  return user ? children : <Navigate to='/auth' replace />;
 }
 
 function App() {
