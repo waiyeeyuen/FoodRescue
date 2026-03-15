@@ -213,7 +213,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'Order service is running' });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3004;
 
 app.listen(PORT, () => {
   console.log(`Order service running on port ${PORT}`);

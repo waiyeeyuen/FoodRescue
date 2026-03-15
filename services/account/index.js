@@ -15,6 +15,7 @@ app.use(cors(corsOptions))
 app.use(express.json())
 
 const USERS = db.collection('users')
+const RESTAURANTS = db.collection('restaurants')
 const JWT_SECRET = process.env.JWT_SECRET || 'foodrescue-secret' // Use env variable in production
 
 // Register a new user account
@@ -53,6 +54,41 @@ app.post('/account/register', async (req, res) => {
   }
 });
 
+// Register a new restaurant account
+app.post('/account/restaurant/register', async (req, res) => {
+  try {
+    const { restaurantName, email, password } = req.body;
+
+    if (!restaurantName || !email || !password) {
+      return res.status(400).json({ error: 'Missing fields' });
+    }
+
+    // Check if email is already registered
+    const existing = await RESTAURANTS.where('email', '==', email).get();
+    if (!existing.empty) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newRestaurant = {
+      restaurantName,
+      email,
+      password: hashedPassword,
+      createdAt: new Date()
+    };
+
+    const docRef = await RESTAURANTS.add(newRestaurant);
+
+    const token = jwt.sign({ id: docRef.id, email, restaurantName }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.status(201).json({ token, user: { id: docRef.id, restaurantName, email } });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Login to an existing user account
 app.post('/account/login', async (req, res) => {
   try {
@@ -84,6 +120,42 @@ app.post('/account/login', async (req, res) => {
     );
 
     res.json({ token, user: { id: doc.id, username: user.username, email: user.email } });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Login to an existing restaurant account
+app.post('/account/restaurant/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Missing fields' });
+    }
+
+    // Find restaurant by email
+    const snapshot = await RESTAURANTS.where('email', '==', email).get();
+    if (snapshot.empty) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const doc = snapshot.docs[0];
+    const restaurant = doc.data();
+
+    const passwordMatch = await bcrypt.compare(password, restaurant.password);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const token = jwt.sign(
+      { id: doc.id, email: restaurant.email, restaurantName: restaurant.restaurantName },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({ token, user: { id: doc.id, restaurantName: restaurant.restaurantName, email: restaurant.email } });
 
   } catch (err) {
     res.status(500).json({ error: err.message });

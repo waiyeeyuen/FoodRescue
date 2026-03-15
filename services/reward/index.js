@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3005;
 const BASE_URL =
   "https://personal-zxyqgjgl.outsystemscloud.com/FoodRescueRewardsSystem/rest/RewardAPI";
 

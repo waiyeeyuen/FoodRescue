@@ -6,7 +6,8 @@ const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescu
 
 function ListingCard({ item }) {
   const expiryDate = new Date(item.expiryTime);
-  const isExpiringSoon = expiryDate - Date.now() < 24 * 60 * 60 * 1000;
+  const now = new Date();
+  const isExpiringSoon = expiryDate - now < 24 * 60 * 60 * 1000;
   const discount = item.originalPrice > 0
     ? Math.round((1 - item.price / item.originalPrice) * 100)
     : 0;
@@ -72,7 +73,7 @@ function HomePage() {
 
   const [activeListings, setActiveListings] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
-  const [searchType, setSearchType] = useState('restaurantName'); // 'restaurantName' | 'itemName'
+  const [searchType, setSearchType] = useState('restaurantName');
   const [searchQuery, setSearchQuery] = useState('');
   const [loadingActive, setLoadingActive] = useState(true);
   const [loadingSearch, setLoadingSearch] = useState(false);
@@ -80,7 +81,7 @@ function HomePage() {
   const [errorSearch, setErrorSearch] = useState(null);
   const [searched, setSearched] = useState(false);
 
-  // Fetch all active listings on mount
+  // Fetch all active food listings on page load
   useEffect(() => {
     fetch(`${OUTSYSTEMS_BASE}/GetActiveListing`)
       .then((r) => {
@@ -92,6 +93,7 @@ function HomePage() {
       .finally(() => setLoadingActive(false));
   }, []);
 
+  // Search for listings by restaurant name or item name
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -115,6 +117,7 @@ function HomePage() {
     }
   };
 
+  // Logout and redirect to login page
   const handleLogout = () => {
     logout();
     navigate('/auth');

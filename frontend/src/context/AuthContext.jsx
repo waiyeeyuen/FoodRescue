@@ -1,22 +1,26 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState } from 'react';
 
 const AuthContext = createContext(null);
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true); // Prevent rendering before session is restored
-
-  const accountUrl = "http://localhost:3001";
-
-  // Restore session from localStorage on page load
-  useEffect(() => {
+function initializeUserFromStorage() {
+  try {
     const token = localStorage.getItem('token');
     const saved = localStorage.getItem('user');
     if (token && saved) {
-      setUser(JSON.parse(saved)); // Rehydrate user state from storage
+      return JSON.parse(saved);
     }
-    setLoading(false);
-  }, []);
+  } catch (e) {
+    console.error('Failed to parse user from storage:', e);
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  }
+  return null;
+}
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => initializeUserFromStorage());
+
+  const accountUrl = "http://localhost:3001";
 
   // Register a new user account
   const register = async ({ username, email, password }) => {
@@ -27,7 +31,19 @@ export function AuthProvider({ children }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Registration failed');
-    saveSession(data); // Store token and user info immediately after registration
+    return data;
+  };
+
+  // Register a new restaurant account
+  const restaurantRegister = async ({ restaurantName, email, password }) => {
+    const res = await fetch(`${accountUrl}/account/restaurant/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ restaurantName, email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Registration failed');
+    return data;
   };
 
   // Login to an existing user account
@@ -39,10 +55,22 @@ export function AuthProvider({ children }) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Login failed');
-    saveSession(data); // Store token and user info
+    saveSession(data);
   };
 
-  // Save token and user to state and localStorage for session persistence
+  // Login to an existing restaurant account
+  const restaurantLogin = async ({ email, password }) => {
+    const res = await fetch(`${accountUrl}/account/restaurant/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Login failed');
+    saveSession(data);
+  };
+
+  // Save token and user to state and localStorage
   const saveSession = ({ token, user }) => {
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(user));
@@ -57,13 +85,12 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, register, login, logout }}>
+    <AuthContext.Provider value={{ user, register, restaurantRegister, login, restaurantLogin, logout }}>
       {children}
     </AuthContext.Provider>
   );
 }
 
-// Custom hook for easy access to auth context
 export function useAuth() {
   return useContext(AuthContext);
 }

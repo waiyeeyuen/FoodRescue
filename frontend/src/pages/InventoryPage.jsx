@@ -15,7 +15,7 @@ function InventoryPage() {
 
   const inventoryUrl = "http://localhost:3000";
 
-  // Get all inventory items on page load
+  // Fetch all inventory items when page loads
   useEffect(() => {
     getInventory();
   }, []);
@@ -25,7 +25,7 @@ function InventoryPage() {
     try {
       const res = await fetch(`${inventoryUrl}/inventory`);
       const data = await res.json();
-      setResponse(data); // Update state with fetched inventory
+      setResponse(data);
     } catch (err) {
       console.error(err.message);
     }
@@ -33,14 +33,14 @@ function InventoryPage() {
 
   // Update form state when input changes
   const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value }); // Spread existing form values and override the changed field
+    setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  // Post a new inventory item
+  // Create a new inventory item
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitting(true); // Disable button while submitting to prevent multiple clicks
-    setError(null); // Clear previous errors
+    setSubmitting(true);
+    setError(null);
     try {
       const res = await fetch(`${inventoryUrl}/inventory`, {
         method: 'POST',
@@ -55,39 +55,39 @@ function InventoryPage() {
         const err = await res.json();
         throw new Error(err.error || 'Failed to add item');
       }
-      setForm({ name: '', quantity: '', supplier: '' }); // Clear form after successful submission
-      await getInventory(); // Refresh inventory list to show the new item
+      setForm({ name: '', quantity: '', supplier: '' });
+      await getInventory();
     } catch (err) {
-      setError(err.message); // Show error message to user
+      setError(err.message);
     } finally {
-      setSubmitting(false); // Re-enable button after submission is complete
+      setSubmitting(false);
     }
   };
 
   // Delete an inventory item
   const handleDelete = async (id) => {
-    if (!confirm('Delete this item?')) return; // Ask for confirmation before deleting
+    if (!confirm('Delete this item?')) return;
     try {
       await fetch(`${inventoryUrl}/inventory/${id}`, { method: 'DELETE' });
-      await getInventory(); // Refresh inventory list to reflect the deletion
+      await getInventory();
     } catch (err) {
-      alert(err.message); // Show error message to user
+      alert(err.message);
     }
   };
 
-  // Start editing an inventory item
+  // Enable editing mode for an inventory item
   const startEdit = (item) => {
-    setEditingId(item.id); // Track which item is being edited
-    setEditForm({ name: item.name, quantity: item.quantity, supplier: item.supplier }); // Pre-fill edit form with current values
+    setEditingId(item.id);
+    setEditForm({ name: item.name, quantity: item.quantity, supplier: item.supplier });
   };
 
-  // Cancel editing and reset the edit form
+  // Exit editing mode and reset edit form
   const cancelEdit = () => {
-    setEditingId(null); // Clear the editing state
-    setEditForm({ name: '', quantity: '', supplier: '' }); // Reset edit form fields
+    setEditingId(null);
+    setEditForm({ name: '', quantity: '', supplier: '' });
   };
 
-  // Update an inventory item
+  // Update an existing inventory item
   const handleUpdate = async (id) => {
     try {
       const res = await fetch(`${inventoryUrl}/inventory/${id}`, {
@@ -95,7 +95,7 @@ function InventoryPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: editForm.name,
-          quantity: Number(editForm.quantity), // Convert to number to match expected type
+          quantity: Number(editForm.quantity),
           supplier: editForm.supplier,
         }),
       });
@@ -103,14 +103,14 @@ function InventoryPage() {
         const err = await res.json();
         throw new Error(err.error || 'Failed to update item');
       }
-      cancelEdit(); // Exit edit mode after successful update
-      await getInventory(); // Refresh inventory list to show the updated item
+      cancelEdit();
+      await getInventory();
     } catch (err) {
-      alert(err.message); // Show error message to user
+      alert(err.message);
     }
   };
 
-  // Logout and redirect to login page
+  // Logout and navigate to login page
   const handleLogout = () => {
     logout();
     navigate('/auth');
