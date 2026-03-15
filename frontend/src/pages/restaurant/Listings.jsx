@@ -52,11 +52,15 @@ export default function RestaurantListings() {
     const now = new Date();
     const inSixHours = new Date(now.getTime() + 6 * 60 * 60 * 1000);
     return {
-      name: '',
+      restaurantName: user?.restaurantName || '',
+      itemName: '',
+      description: '',
       price: '',
+      originalPrice: '',
       quantity: '',
-      supplier: user?.restaurantName || '',
       expiryLocal: formatLocalInputValue(inSixHours),
+      imageURL: '',
+      cuisineType: '',
     };
   });
 
@@ -119,7 +123,7 @@ export default function RestaurantListings() {
       .sort((a, b) => (a.expiryMs ?? Infinity) - (b.expiryMs ?? Infinity));
   }, [listings]);
 
-  const onCreate = async (e) => {
+    const onCreate = async (e) => {
     e.preventDefault();
     if (!restaurantId) {
       setCreateError('Missing restaurant id');
@@ -129,18 +133,20 @@ export default function RestaurantListings() {
     setCreating(true);
     setCreateError(null);
     try {
-      const createdAt = Math.floor(Date.now() / 1000);
-      const expirySeconds = Math.floor(new Date(form.expiryLocal).getTime() / 1000);
-      if (!Number.isFinite(expirySeconds)) throw new Error('Invalid expiry time');
+      const expiryMs = new Date(form.expiryLocal).getTime();
+      if (!Number.isFinite(expiryMs)) throw new Error('Invalid expiry time');
 
       const payload = {
         restaurantId,
-        createdAt,
-        expiryTime: expirySeconds,
-        name: form.name.trim(),
+        restaurantName: form.restaurantName.trim(),
+        itemName: form.itemName.trim(),
+        description: form.description.trim(),
+        expiryTime: new Date(form.expiryLocal).toISOString(),
         price: Number(form.price),
+        originalPrice: form.originalPrice === '' ? null : Number(form.originalPrice),
         quantity: Number(form.quantity),
-        supplier: form.supplier.trim(),
+        imageURL: form.imageURL.trim(),
+        cuisineType: form.cuisineType.trim(),
       };
 
       const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
@@ -160,7 +166,16 @@ export default function RestaurantListings() {
         throw new Error(message);
       }
 
-      setForm((f) => ({ ...f, name: '', price: '', quantity: '' }));
+      setForm((f) => ({
+        ...f,
+        itemName: '',
+        description: '',
+        price: '',
+        originalPrice: '',
+        quantity: '',
+        imageURL: '',
+        cuisineType: '',
+      }));
       await fetchListings();
     } catch (e2) {
       setCreateError(e2?.message || 'Failed to create listing');
@@ -198,12 +213,23 @@ export default function RestaurantListings() {
 
         <form onSubmit={onCreate} className="grid gap-3 sm:grid-cols-6">
           <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Name</label>
+            <label className="text-xs text-muted-foreground">Restaurant name</label>
             <input
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              value={form.restaurantName}
+              onChange={(e) => setForm((f) => ({ ...f, restaurantName: e.target.value }))}
               className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="e.g. Sushi Bento Set"
+              placeholder={user?.restaurantName || 'Restaurant'}
+              required
+            />
+          </div>
+
+          <div className="sm:col-span-3">
+            <label className="text-xs text-muted-foreground">Item name</label>
+            <input
+              value={form.itemName}
+              onChange={(e) => setForm((f) => ({ ...f, itemName: e.target.value }))}
+              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+              placeholder="e.g. Fried Fish Noodle Soup"
               required
             />
           </div>
@@ -221,6 +247,17 @@ export default function RestaurantListings() {
           </div>
 
           <div className="sm:col-span-1">
+            <label className="text-xs text-muted-foreground">Original</label>
+            <input
+              value={form.originalPrice}
+              onChange={(e) => setForm((f) => ({ ...f, originalPrice: e.target.value }))}
+              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+              placeholder="5.00"
+              inputMode="decimal"
+            />
+          </div>
+
+          <div className="sm:col-span-1">
             <label className="text-xs text-muted-foreground">Qty</label>
             <input
               value={form.quantity}
@@ -228,17 +265,6 @@ export default function RestaurantListings() {
               className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
               placeholder="10"
               inputMode="numeric"
-              required
-            />
-          </div>
-
-          <div className="sm:col-span-1">
-            <label className="text-xs text-muted-foreground">Supplier</label>
-            <input
-              value={form.supplier}
-              onChange={(e) => setForm((f) => ({ ...f, supplier: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder={user?.restaurantName || 'Restaurant'}
               required
             />
           </div>
@@ -253,11 +279,41 @@ export default function RestaurantListings() {
               required
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Sent to inventory as UTC epoch seconds.
+              Sent to inventory as ISO datetime (UTC).
             </p>
           </div>
 
-          <div className="sm:col-span-3 flex items-end justify-end">
+          <div className="sm:col-span-3">
+            <label className="text-xs text-muted-foreground">Cuisine type</label>
+            <input
+              value={form.cuisineType}
+              onChange={(e) => setForm((f) => ({ ...f, cuisineType: e.target.value }))}
+              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+              placeholder="e.g. chinese"
+            />
+          </div>
+
+          <div className="sm:col-span-3">
+            <label className="text-xs text-muted-foreground">Image URL</label>
+            <input
+              value={form.imageURL}
+              onChange={(e) => setForm((f) => ({ ...f, imageURL: e.target.value }))}
+              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+              placeholder="https://..."
+            />
+          </div>
+
+          <div className="sm:col-span-6">
+            <label className="text-xs text-muted-foreground">Description</label>
+            <textarea
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              className="mt-1 w-full min-h-24 rounded-xl border border-input bg-background px-3 py-2.5 text-sm resize-y"
+              placeholder="Describe the item (portion size, pickup notes, etc.)"
+            />
+          </div>
+
+          <div className="sm:col-span-6 flex items-end justify-end">
             <Button type="submit" disabled={creating} className="gap-2">
               {creating && <Spinner className="text-primary-foreground size-4" />}
               {creating ? 'Creating...' : 'Create Listing'}

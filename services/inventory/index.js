@@ -16,116 +16,93 @@ const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescu
 async function createListing(req, res) {
   try {
     const {
-      createdAt,
-      expiryTime,
-      expiryAtUtcSeconds,
-      itemName,
-      name,
-      price,
-      quantity,
-      supplier,
       restaurantId,
+      restaurantName,
+      itemName,
+      description,
+      price,
+      originalPrice,
+      quantity,
+      expiryTime,
+      imageURL,
+      cuisineType,
     } = req.body || {};
 
-    const normalizedItemName = itemName || name;
-    const normalizedCreatedAt = Number.isFinite(Number(createdAt))
-      ? Number(createdAt)
-      : Math.floor(Date.now() / 1000);
-    const normalizedExpiryTime = Number.isFinite(Number(expiryTime))
-      ? Number(expiryTime)
-      : Number.isFinite(Number(expiryAtUtcSeconds))
-        ? Number(expiryAtUtcSeconds)
-        : null;
-
-    const normalizedPrice = Number(price);
-    const normalizedQuantity = Number(quantity);
-
-    if (!normalizedItemName || !supplier || !restaurantId) {
-      return res.status(400).json({ error: 'restaurantId, name, and supplier are required' });
+    // Basic validation
+    // if (!restaurantId || !restaurantName || !itemName) {
+    //   return res.status(400).json({ error: 'restaurantId, restaurantName, itemName are required' });
+    // }
+    if (price === undefined || price === null || Number.isNaN(Number(price))) {
+      return res.status(400).json({ error: 'price is required' });
     }
-    if (!Number.isFinite(normalizedPrice) || !Number.isFinite(normalizedQuantity)) {
-      return res.status(400).json({ error: 'price and quantity must be numbers' });
+    if (quantity === undefined || quantity === null || Number.isNaN(Number(quantity))) {
+      return res.status(400).json({ error: 'quantity is required' });
     }
-    if (!Number.isFinite(normalizedExpiryTime)) {
-      return res.status(400).json({ error: 'expiryTime (UTC epoch seconds) is required' });
+    if (!expiryTime) {
+      return res.status(400).json({ error: 'expiryTime is required' });
     }
 
-    const payload = {
-      createdAt: Math.floor(normalizedCreatedAt),
-      expiryTime: Math.floor(normalizedExpiryTime),
+    const normalizedRestaurantName = String(restaurantName).trim();
+    const normalizedItemName = String(itemName).trim();
+    const normalizedExpiryTime = String(expiryTime).trim();
+    const normalizedDescription = description === undefined || description === null ? '' : String(description);
+
+    if (!normalizedRestaurantName || !normalizedItemName || !normalizedExpiryTime) {
+      return res.status(400).json({ error: 'restaurantName, itemName, expiryTime must be non-empty' });
+    }
+
+    const params = new URLSearchParams({
+      restaurantId: String(restaurantId),
+      restaurantName: normalizedRestaurantName,
       itemName: normalizedItemName,
-      price: normalizedPrice,
-      quantity: Math.floor(normalizedQuantity),
-      supplier,
-      restaurantId,
-    };
+      description: normalizedDescription,
+      price: String(Number(price)),
+      originalPrice: originalPrice != null && originalPrice !== '' ? String(Number(originalPrice)) : '',
+      quantity: String(Number(quantity)),
+      expiryTime: normalizedExpiryTime, // e.g. "2026-03-31T23:59:59.938Z"
+      imageURL: imageURL ?? '',
+      cuisineType: cuisineType ?? '',
+    });
 
-    const authHeader = req.get('authorization');
-    const headers = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      ...(authHeader ? { Authorization: authHeader } : {}),
-    };
-
-    const baseUrls = [
-      `${OUTSYSTEMS_BASE}/CreateListing`,
-      `${OUTSYSTEMS_BASE}/CreateListing/`,
-    ];
+    const url = `${OUTSYSTEMS_BASE}/CreateListing?${params.toString()}`;
 
     const attempts = [];
-
-    const tryRequest = async (url, init) => {
-      const response = await fetch(url, init);
-      const text = await response.text();
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = text;
-      }
-      attempts.push({ url, method: init.method, status: response.status, data });
+    const tryRequest = async (method) => {
+      const response = await fetch(url, {
+        method,
+        headers: { Accept: 'application/json' },
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const data = contentType.includes('application/json')
+        ? await response.json()
+        : await response.text();
+      attempts.push({ method, status: response.status, url, data });
       return { response, data };
     };
 
-    // 1) Try POST JSON (typical REST create)
-    for (const url of baseUrls) {
-      const { response, data } = await tryRequest(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-      if (response.ok) return res.status(201).json(data ?? { ok: true });
+    // OutSystems example uses query params; try GET first.
+    {
+      const { response, data } = await tryRequest('GET');
+      if (response.ok) return res.status(201).json(data);
     }
-
-    // 2) Fallback: some OutSystems endpoints are configured as GET with query params
-    const qs = new URLSearchParams(
-      Object.entries(payload).reduce((acc, [k, v]) => {
-        acc[k] = String(v);
-        return acc;
-      }, {})
-    ).toString();
-
-    for (const url of baseUrls) {
-      const { response, data } = await tryRequest(`${url}?${qs}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) },
-      });
-      if (response.ok) return res.status(201).json(data ?? { ok: true });
+    {
+      const { response, data } = await tryRequest('POST');
+      if (response.ok) return res.status(201).json(data);
     }
 
     return res.status(502).json({
-      error: 'Failed to create listing (upstream)',
+      error: 'OutSystems CreateListing failed',
       attempts,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 }
 
-// Create a new listing (preferred)
+// Create a listing (frontend calls this)
 app.post('/inventory/listings', createListing);
 
-// Backward-compat: older/alternate path
+// Backward-compat alias
 app.post('/inventory/createListing', createListing);
 
 // Get all active listings
