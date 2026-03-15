@@ -13,6 +13,26 @@ app.use(express.json())
 
 const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
+async function readOutsystemsBody(response) {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+  if (!raw) return null;
+
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Continue to fallback parser.
+    }
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 async function createListing(req, res) {
   try {
     const {
@@ -72,10 +92,7 @@ async function createListing(req, res) {
         method,
         headers: { Accept: 'application/json' },
       });
-      const contentType = response.headers.get('content-type') || '';
-      const data = contentType.includes('application/json')
-        ? await response.json()
-        : await response.text();
+      const data = await readOutsystemsBody(response);
       attempts.push({ method, status: response.status, url, data });
       return { response, data };
     };
@@ -123,12 +140,20 @@ app.get('/inventory/active', async (req, res) => {
 app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
-    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurant?restaurantId=${encodeURIComponent(restaurantId)}`);
+    console.log('restaurantid', restaurantId)
+    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurantId?restaurantId=${encodeURIComponent(restaurantId)}`);
+    const data = await readOutsystemsBody(response);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch restaurant listings' });
     }
-    const data = await response.json();
-    res.json(data);
+    if (Array.isArray(data)) {
+      return res.json(data);
+    }
+    // OutSystems returns plain-text (e.g. the restaurantId) when there are no listings
+    if (typeof data === 'string') {
+      return res.json([]);
+    }
+    return res.json(data ?? []);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

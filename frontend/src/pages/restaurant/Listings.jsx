@@ -35,6 +35,26 @@ function formatLocalInputValue(date) {
   )}:${pad(date.getMinutes())}`;
 }
 
+async function readResponseBody(response) {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+  if (!raw) return null;
+
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // Fall through and return raw text when backend sends invalid JSON.
+    }
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export default function RestaurantListings() {
   const inventoryServiceUrl =
     import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
@@ -76,14 +96,18 @@ export default function RestaurantListings() {
       if (!res.ok) {
         let message = 'Failed to load listings';
         try {
-          const body = await res.json();
-          message = body?.error || message;
+          const body = await readResponseBody(res);
+          if (typeof body === 'string') {
+            message = body || message;
+          } else {
+            message = body?.error || message;
+          }
         } catch {
           // ignore
         }
         throw new Error(message);
       }
-      const data = await res.json();
+      const data = await readResponseBody(res);
       setListings(Array.isArray(data) ? data : []);
     } catch (e) {
       if (e?.name === 'AbortError') return;
@@ -136,15 +160,25 @@ export default function RestaurantListings() {
       const expiryMs = new Date(form.expiryLocal).getTime();
       if (!Number.isFinite(expiryMs)) throw new Error('Invalid expiry time');
 
+      const parsedPrice = Number(form.price);
+      const parsedQuantity = Number(form.quantity);
+      const parsedOriginalPrice = form.originalPrice === '' ? null : Number(form.originalPrice);
+      if (!Number.isFinite(parsedPrice) || !Number.isFinite(parsedQuantity)) {
+        throw new Error('Price and quantity must be valid numbers');
+      }
+      if (parsedOriginalPrice !== null && !Number.isFinite(parsedOriginalPrice)) {
+        throw new Error('Original price must be a valid number');
+      }
+
       const payload = {
         restaurantId,
         restaurantName: form.restaurantName.trim(),
         itemName: form.itemName.trim(),
         description: form.description.trim(),
         expiryTime: new Date(form.expiryLocal).toISOString(),
-        price: Number(form.price),
-        originalPrice: form.originalPrice === '' ? null : Number(form.originalPrice),
-        quantity: Number(form.quantity),
+        price: parsedPrice,
+        originalPrice: parsedOriginalPrice,
+        quantity: parsedQuantity,
         imageURL: form.imageURL.trim(),
         cuisineType: form.cuisineType.trim(),
       };
@@ -158,8 +192,12 @@ export default function RestaurantListings() {
       if (!res.ok) {
         let message = 'Failed to create listing';
         try {
-          const body = await res.json();
-          message = body?.error || message;
+          const body = await readResponseBody(res);
+          if (typeof body === 'string') {
+            message = body || message;
+          } else {
+            message = body?.error || message;
+          }
         } catch {
           // ignore
         }
