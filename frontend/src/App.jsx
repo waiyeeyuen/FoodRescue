@@ -1,36 +1,25 @@
-import { useState, useEffect } from 'react'
-import './App.css'
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { useAuth } from './context/AuthContext';
+import AuthPage from './pages/AuthPage';
+import HomePage from './pages/HomePage';
+import InventoryPage from './pages/InventoryPage';
 
-function App() {
-  const [response, setResponse] = useState([]);
-
-  const url = "http://localhost:3000"
-
-  useEffect(() => {
-    const getInventory = async () => {
-      try {
-        const res = await fetch(`${url}/inventory`)
-        const data = await res.json()
-        setResponse(data)
-      } catch (error) {
-        throw error.message
-      }
-    }
-
-    getInventory()
-  }, []);
-
-  return (
-    <div className='text-lg flex flex-col gap-3'>
-      {response.map((res) => (
-        <div className='flex gap-4'>
-          <span>{res.name}</span>
-          <span>{res.quantity}</span>
-          <span>{res.supplier}</span>
-        </div>
-      ))}
-    </div>
-  )
+// Redirect unauthenticated users to the login page
+function ProtectedRoute({ children }) {
+  const { restaurant, loading } = useAuth();
+  if (loading) return null; // Wait for session to be restored before rendering
+  return restaurant ? children : <Navigate to='/auth' replace />;
 }
 
-export default App
+function App() {
+  return (
+    <Routes>
+      <Route path='/auth' element={<AuthPage />} />
+      <Route path='/' element={<ProtectedRoute><HomePage /></ProtectedRoute>} />
+      <Route path='/inventory' element={<ProtectedRoute><InventoryPage /></ProtectedRoute>} />
+      <Route path='*' element={<Navigate to='/' replace />} />
+    </Routes>
+  );
+}
+
+export default App;
