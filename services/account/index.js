@@ -149,6 +149,7 @@ app.post('/account/restaurant/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Sign JWT with restaurant identity
     const token = jwt.sign(
       { id: doc.id, email: restaurant.email, restaurantName: restaurant.restaurantName },
       JWT_SECRET,
