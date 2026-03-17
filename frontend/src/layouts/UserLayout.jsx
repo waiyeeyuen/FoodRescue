@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { ShoppingCartIcon } from 'lucide-react';
 
 function UserLayout() {
-  const { user, logout } = useAuth();
+  const { user, logout, cartCount } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const location = useLocation();
@@ -59,6 +60,20 @@ function UserLayout() {
 
             {/* Profile Section */}
             <div className="flex items-center gap-4">
+              {/* Cart */}
+              <Link
+                to="/cart"
+                className="relative h-9 w-9 rounded-full bg-slate-100 hover:bg-slate-200 transition flex items-center justify-center ring-1 ring-slate-200"
+                aria-label="Cart"
+              >
+                <ShoppingCartIcon className="h-4 w-4 text-slate-700" />
+                {cartCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-slate-900 text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-white">
+                    {cartCount > 99 ? '99+' : cartCount}
+                  </span>
+                )}
+              </Link>
+
               {/* Profile Picture Dropdown */}
               <div className="relative">
                 <button
@@ -87,20 +102,13 @@ function UserLayout() {
                     >
                       Profile Settings
                     </Link>
-                    <a
-                      href="#notifications"
+                    <Link
+                      to="/profile#notifications"
                       className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
                       onClick={() => setProfileMenuOpen(false)}
                     >
                       Notifications
-                    </a>
-                    <a
-                      href="#preferences"
-                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                      onClick={() => setProfileMenuOpen(false)}
-                    >
-                      Preferences
-                    </a>
+                    </Link>
                     <button
                       onClick={handleLogout}
                       className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"

@@ -42,5 +42,7 @@ app.get('/notifications/:user_id', async (req, res) => {
   res.json(snapshot.docs.map(doc => doc.data()));
 });
 
+const PORT = process.env.PORT || 3006;
+
 startConsumer().catch(console.error);
-app.listen(3001, () => console.log('Notifications service on :3001'));
+app.listen(PORT, () => console.log(`Notifications service on :${PORT}`));

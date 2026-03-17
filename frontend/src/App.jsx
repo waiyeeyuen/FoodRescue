@@ -14,6 +14,7 @@ import UserMap from './pages/user/Map';
 import UserOrders from './pages/user/Orders';
 import UserFavorites from './pages/user/Favorites';
 import UserProfile from './pages/user/Profile';
+import UserCart from './pages/user/Cart';
 
 // Pages - Restaurant (Merchant)
 import RestaurantListings from './pages/restaurant/Listings';
@@ -63,6 +64,7 @@ function App() {
         <Route path='search' element={<Navigate to='/' replace />} />
         <Route path='orders' element={<UserOrders />} />
         <Route path='favorites' element={<UserFavorites />} />
+        <Route path='cart' element={<UserCart />} />
         <Route path='profile' element={<UserProfile />} />
       </Route>
 

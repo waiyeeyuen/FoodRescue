@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
-import { PlusIcon, RefreshCwIcon } from 'lucide-react';
+import { ChevronLeftIcon, ChevronRightIcon, MoreVerticalIcon, PlusIcon } from 'lucide-react';
 
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -62,12 +70,20 @@ export default function RestaurantListings() {
   const { user } = useAuth();
   const restaurantId = user?.id;
 
+  const PAGE_SIZE = 5;
+  const PAGE_WINDOW = 5;
+
   const [listings, setListings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsItem, setDetailsItem] = useState(null);
+  const [statusTab, setStatusTab] = useState('active');
+  const [page, setPage] = useState(1);
   const [form, setForm] = useState(() => {
     const now = new Date();
     const inSixHours = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -83,6 +99,14 @@ export default function RestaurantListings() {
       cuisineType: '',
     };
   });
+
+  useEffect(() => {
+    if (!user?.restaurantName) return;
+    setForm((prev) => {
+      if (prev.restaurantName) return prev;
+      return { ...prev, restaurantName: user.restaurantName };
+    });
+  }, [user?.restaurantName]);
 
   const fetchListings = async (signal) => {
     if (!restaurantId) return;
@@ -131,13 +155,18 @@ export default function RestaurantListings() {
         const expiryMs = parseExpiryToMs(item);
         const isExpired = expiryMs ? expiryMs < now : false;
         const name = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
-        const supplier = getField(item, 'supplier', 'Supplier') ?? '—';
         const quantity = Number(getField(item, 'quantity', 'Quantity') ?? 0);
         const price = Number(getField(item, 'price', 'Price') ?? 0);
+        const imageUrlRaw = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
+        const imageUrl =
+          imageUrlRaw === undefined || imageUrlRaw === null || String(imageUrlRaw).trim() === ''
+            ? null
+            : String(imageUrlRaw).trim();
         return {
           key: getField(item, 'Id', 'id', 'listingId', 'ListingId') ?? `${name}-${expiryMs ?? ''}`,
           name,
-          supplier,
+          imageUrl,
+          raw: item,
           quantity: Number.isFinite(quantity) ? quantity : 0,
           price: Number.isFinite(price) ? price : 0,
           expiryMs,
@@ -147,7 +176,47 @@ export default function RestaurantListings() {
       .sort((a, b) => (a.expiryMs ?? Infinity) - (b.expiryMs ?? Infinity));
   }, [listings]);
 
-    const onCreate = async (e) => {
+  const counts = useMemo(() => {
+    let active = 0;
+    let expired = 0;
+    for (const row of rows) {
+      if (row.isExpired) expired += 1;
+      else active += 1;
+    }
+    return { active, expired };
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    if (statusTab === 'expired') return rows.filter((r) => r.isExpired);
+    return rows.filter((r) => !r.isExpired);
+  }, [rows, statusTab]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+
+  useEffect(() => {
+    setPage(1);
+  }, [statusTab]);
+
+  useEffect(() => {
+    setPage((p) => Math.min(Math.max(1, p), pageCount));
+  }, [pageCount]);
+
+  const pagedRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filteredRows.slice(start, start + PAGE_SIZE);
+  }, [filteredRows, page]);
+
+  const pageWindowStart = Math.floor((page - 1) / PAGE_WINDOW) * PAGE_WINDOW + 1;
+  const pageWindowEnd = Math.min(pageCount, pageWindowStart + PAGE_WINDOW - 1);
+  const pageButtons = [];
+  for (let i = pageWindowStart; i <= pageWindowEnd; i += 1) pageButtons.push(i);
+
+  const openDetails = (item) => {
+    setDetailsItem(item);
+    setDetailsOpen(true);
+  };
+
+  const onCreate = async (e) => {
     e.preventDefault();
     if (!restaurantId) {
       setCreateError('Missing restaurant id');
@@ -215,6 +284,7 @@ export default function RestaurantListings() {
         cuisineType: '',
       }));
       await fetchListings();
+      setCreateOpen(false);
     } catch (e2) {
       setCreateError(e2?.message || 'Failed to create listing');
     } finally {
@@ -228,150 +298,200 @@ export default function RestaurantListings() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Listings</h1>
           <p className="text-slate-600 mt-2">
-            Create listings and view everything you’ve published (including expired).
+            View everything you’ve published (including expired).
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => fetchListings()}
-          disabled={loading}
-          className="gap-2"
-        >
-          <RefreshCwIcon className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </Button>
-      </div>
-
-      <div className="rounded-2xl bg-card ring-1 ring-border p-4 sm:p-5">
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <h2 className="text-base font-semibold">Add Listing</h2>
-          <PlusIcon className="text-muted-foreground size-4" />
-        </div>
-
-        <form onSubmit={onCreate} className="grid gap-3 sm:grid-cols-6">
-          <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Restaurant name</label>
-            <input
-              value={form.restaurantName}
-              onChange={(e) => setForm((f) => ({ ...f, restaurantName: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder={user?.restaurantName || 'Restaurant'}
-              required
-            />
-          </div>
-
-          <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Item name</label>
-            <input
-              value={form.itemName}
-              onChange={(e) => setForm((f) => ({ ...f, itemName: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="e.g. Fried Fish Noodle Soup"
-              required
-            />
-          </div>
-
-          <div className="sm:col-span-1">
-            <label className="text-xs text-muted-foreground">Price</label>
-            <input
-              value={form.price}
-              onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="8.90"
-              inputMode="decimal"
-              required
-            />
-          </div>
-
-          <div className="sm:col-span-1">
-            <label className="text-xs text-muted-foreground">Original</label>
-            <input
-              value={form.originalPrice}
-              onChange={(e) => setForm((f) => ({ ...f, originalPrice: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="5.00"
-              inputMode="decimal"
-            />
-          </div>
-
-          <div className="sm:col-span-1">
-            <label className="text-xs text-muted-foreground">Qty</label>
-            <input
-              value={form.quantity}
-              onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="10"
-              inputMode="numeric"
-              required
-            />
-          </div>
-
-          <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Expiry (local time)</label>
-            <input
-              type="datetime-local"
-              value={form.expiryLocal}
-              onChange={(e) => setForm((f) => ({ ...f, expiryLocal: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              required
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Sent to inventory as ISO datetime (UTC).
-            </p>
-          </div>
-
-          <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Cuisine type</label>
-            <input
-              value={form.cuisineType}
-              onChange={(e) => setForm((f) => ({ ...f, cuisineType: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="e.g. chinese"
-            />
-          </div>
-
-          <div className="sm:col-span-3">
-            <label className="text-xs text-muted-foreground">Image URL</label>
-            <input
-              value={form.imageURL}
-              onChange={(e) => setForm((f) => ({ ...f, imageURL: e.target.value }))}
-              className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-              placeholder="https://..."
-            />
-          </div>
-
-          <div className="sm:col-span-6">
-            <label className="text-xs text-muted-foreground">Description</label>
-            <textarea
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              className="mt-1 w-full min-h-24 rounded-xl border border-input bg-background px-3 py-2.5 text-sm resize-y"
-              placeholder="Describe the item (portion size, pickup notes, etc.)"
-            />
-          </div>
-
-          <div className="sm:col-span-6 flex items-end justify-end">
-            <Button type="submit" disabled={creating} className="gap-2">
-              {creating && <Spinner className="text-primary-foreground size-4" />}
-              {creating ? 'Creating...' : 'Create Listing'}
-            </Button>
-          </div>
-
-          {createError && (
-            <div className="sm:col-span-6 text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl p-3">
-              {createError}
-            </div>
-          )}
-        </form>
       </div>
 
       <div className="rounded-2xl bg-card ring-1 ring-border overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-border flex items-center justify-between">
-          <h2 className="text-base font-semibold">Your Listings</h2>
-          {!loading && !error && (
-            <p className="text-xs text-muted-foreground">{rows.length} total</p>
-          )}
+        <div className="p-4 sm:p-5 border-b border-border flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-base font-semibold">Your Listings</h2>
+
+            {!loading && !error && rows.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setStatusTab('active')}
+                  className={`rounded-full border-green-200 text-green-700 hover:bg-green-50 ${
+                    statusTab === 'active'
+                      ? 'bg-green-50 ring-1 ring-green-200 border-transparent hover:bg-green-100'
+                      : ''
+                  }`}
+                >
+                  Active ({counts.active})
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setStatusTab('expired')}
+                  className={`rounded-full border-red-200 text-red-700 hover:bg-red-50 ${
+                    statusTab === 'expired'
+                      ? 'bg-red-50 ring-1 ring-red-200 border-transparent hover:bg-red-100'
+                      : ''
+                  }`}
+                >
+                  Expired ({counts.expired})
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <Dialog
+              open={createOpen}
+              onOpenChange={(open) => {
+                setCreateOpen(open);
+                if (open) setCreateError(null);
+              }}
+            >
+              <DialogTrigger
+                render={
+                  <Button type="button" className="gap-2" disabled={!restaurantId} />
+                }
+              >
+                <PlusIcon className="size-4" />
+                Create Listing
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-2xl max-h-[calc(100vh-4rem)] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Create listing</DialogTitle>
+                  <DialogDescription>
+                    Add a new listing to your storefront. Expiry is stored as UTC ISO time.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <form onSubmit={onCreate} className="grid gap-3 sm:grid-cols-6">
+                  <div className="sm:col-span-3">
+                    <label className="text-xs text-muted-foreground">Restaurant name</label>
+                    <input
+                      value={form.restaurantName}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, restaurantName: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder={user?.restaurantName || 'Restaurant'}
+                      required
+                    />
+                  </div>
+
+                  <div className="sm:col-span-3">
+                    <label className="text-xs text-muted-foreground">Item name</label>
+                    <input
+                      value={form.itemName}
+                      onChange={(e) => setForm((f) => ({ ...f, itemName: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="e.g. Fried Fish Noodle Soup"
+                      required
+                    />
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <label className="text-xs text-muted-foreground">Price</label>
+                    <input
+                      value={form.price}
+                      onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="8.90"
+                      inputMode="decimal"
+                      required
+                    />
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <label className="text-xs text-muted-foreground">Original</label>
+                    <input
+                      value={form.originalPrice}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, originalPrice: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="5.00"
+                      inputMode="decimal"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <label className="text-xs text-muted-foreground">Qty</label>
+                    <input
+                      value={form.quantity}
+                      onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="10"
+                      inputMode="numeric"
+                      required
+                    />
+                  </div>
+
+                  <div className="sm:col-span-3">
+                    <label className="text-xs text-muted-foreground">Expiry (local time)</label>
+                    <input
+                      type="datetime-local"
+                      value={form.expiryLocal}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, expiryLocal: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      required
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Sent to inventory as ISO datetime (UTC).
+                    </p>
+                  </div>
+
+                  <div className="sm:col-span-3">
+                    <label className="text-xs text-muted-foreground">Cuisine type</label>
+                    <input
+                      value={form.cuisineType}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, cuisineType: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="e.g. chinese"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-3">
+                    <label className="text-xs text-muted-foreground">Image URL</label>
+                    <input
+                      value={form.imageURL}
+                      onChange={(e) => setForm((f) => ({ ...f, imageURL: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                      placeholder="https://..."
+                    />
+                  </div>
+
+                  <div className="sm:col-span-6">
+                    <label className="text-xs text-muted-foreground">Description</label>
+                    <textarea
+                      value={form.description}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, description: e.target.value }))
+                      }
+                      className="mt-1 w-full min-h-24 rounded-xl border border-input bg-background px-3 py-2.5 text-sm resize-y"
+                      placeholder="Describe the item (portion size, pickup notes, etc.)"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-6 flex items-end justify-end">
+                    <Button type="submit" disabled={creating} className="gap-2">
+                      {creating && <Spinner className="text-primary-foreground size-4" />}
+                      {creating ? 'Creating...' : 'Create Listing'}
+                    </Button>
+                  </div>
+
+                  {createError && (
+                    <div className="sm:col-span-6 text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl p-3">
+                      {createError}
+                    </div>
+                  )}
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         {loading ? (
@@ -383,49 +503,218 @@ export default function RestaurantListings() {
           <div className="p-4 sm:p-5 text-sm text-red-600">{error}</div>
         ) : rows.length === 0 ? (
           <div className="p-4 sm:p-5 text-sm text-muted-foreground">
-            No listings yet. Create your first one above.
+            No listings yet. Use “Create Listing” to add your first one.
+          </div>
+        ) : filteredRows.length === 0 ? (
+          <div className="p-4 sm:p-5 text-sm text-muted-foreground">
+            No {statusTab === 'expired' ? 'expired' : 'active'} listings.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-muted-foreground">
-                <tr>
-                  <th className="text-left font-medium px-4 py-3">Name</th>
-                  <th className="text-left font-medium px-4 py-3">Supplier</th>
-                  <th className="text-right font-medium px-4 py-3">Qty</th>
-                  <th className="text-right font-medium px-4 py-3">Price</th>
-                  <th className="text-left font-medium px-4 py-3">Expiry</th>
-                  <th className="text-left font-medium px-4 py-3">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.key} className="border-t border-border">
-                    <td className="px-4 py-3 font-medium text-foreground">{r.name}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.supplier}</td>
-                    <td className="px-4 py-3 text-right">{r.quantity}</td>
-                    <td className="px-4 py-3 text-right">${r.price.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {r.expiryMs ? new Date(r.expiryMs).toLocaleString() : '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${
-                          r.isExpired
-                            ? 'bg-red-50 text-red-700 ring-red-200'
-                            : 'bg-green-50 text-green-700 ring-green-200'
-                        }`}
-                      >
-                        {r.isExpired ? 'Expired' : 'Active'}
-                      </span>
-                    </td>
+          <div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-muted-foreground">
+                  <tr>
+                    <th className="text-left font-medium px-4 py-3">Name</th>
+                    <th className="text-right font-medium px-4 py-3">Qty</th>
+                    <th className="text-right font-medium px-4 py-3">Price</th>
+                    <th className="text-left font-medium px-4 py-3">Expiry</th>
+                    <th className="text-left font-medium px-4 py-3">Status</th>
+                    <th className="text-right font-medium px-4 py-3">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {pagedRows.map((r) => (
+                    <tr key={r.key} className="border-t border-border">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <div className="size-8 overflow-hidden rounded-md bg-muted ring-1 ring-border">
+                            {r.imageUrl ? (
+                              <img
+                                src={r.imageUrl}
+                                alt={r.name}
+                                className="h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-xs font-semibold text-muted-foreground">
+                                {String(r.name || 'L').slice(0, 1).toUpperCase()}
+                              </div>
+                            )}
+                          </div>
+                          <p className="truncate font-medium text-foreground">{r.name}</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">{r.quantity}</td>
+                      <td className="px-4 py-3 text-right">${r.price.toFixed(2)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {r.expiryMs ? new Date(r.expiryMs).toLocaleString() : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${
+                            r.isExpired
+                              ? 'bg-red-50 text-red-700 ring-red-200'
+                              : 'bg-green-50 text-green-700 ring-green-200'
+                          }`}
+                        >
+                          {r.isExpired ? 'Expired' : 'Active'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => openDetails(r.raw)}
+                          aria-label="View details"
+                        >
+                          <MoreVerticalIcon className="size-4" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">
+                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filteredRows.length)} of{' '}
+                {filteredRows.length}
+              </p>
+
+              {pageCount > 1 && (
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="outline"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeftIcon />
+                  </Button>
+
+                  {pageButtons.map((p) => (
+                    <Button
+                      key={p}
+                      type="button"
+                      size="xs"
+                      variant={p === page ? 'secondary' : 'outline'}
+                      onClick={() => setPage(p)}
+                      className="min-w-9"
+                    >
+                      {p}
+                    </Button>
+                  ))}
+
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="outline"
+                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                    disabled={page >= pageCount}
+                    aria-label="Next page"
+                  >
+                    <ChevronRightIcon />
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
+
+      <Dialog
+        open={detailsOpen}
+        onOpenChange={(open) => {
+          setDetailsOpen(open);
+          if (!open) setDetailsItem(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-xl max-h-[calc(100vh-4rem)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Listing details</DialogTitle>
+            <DialogDescription>Full details for this listing.</DialogDescription>
+          </DialogHeader>
+
+          {detailsItem ? (
+            <div className="grid gap-4">
+              <div className="flex items-center gap-3">
+                <div className="size-10 overflow-hidden rounded-lg bg-muted ring-1 ring-border">
+                  {getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl') ? (
+                    <img
+                      src={getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl')}
+                      alt={getField(detailsItem, 'itemName', 'ItemName', 'name', 'Name') || 'Listing'}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs font-semibold text-muted-foreground">
+                      {String(
+                        getField(detailsItem, 'itemName', 'ItemName', 'name', 'Name') || 'L'
+                      )
+                        .slice(0, 1)
+                        .toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">
+                    {getField(detailsItem, 'itemName', 'ItemName', 'name', 'Name') || 'Untitled'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    ID: {getField(detailsItem, 'Id', 'id', 'listingId', 'ListingId') || '—'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Quantity</span>
+                  <span className="font-medium">
+                    {getField(detailsItem, 'quantity', 'Quantity') ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Price</span>
+                  <span className="font-medium">{getField(detailsItem, 'price', 'Price') ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Original price</span>
+                  <span className="font-medium">
+                    {getField(detailsItem, 'originalPrice', 'OriginalPrice') ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Cuisine</span>
+                  <span className="font-medium">
+                    {getField(detailsItem, 'cuisineType', 'CuisineType') ?? '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">Expiry</span>
+                  <span className="font-medium">
+                    {getField(detailsItem, 'expiryTime', 'ExpiryTime') ?? '—'}
+                  </span>
+                </div>
+              </div>
+
+              {getField(detailsItem, 'description', 'Description') ? (
+                <div className="rounded-xl bg-muted/40 p-3 text-sm">
+                  {getField(detailsItem, 'description', 'Description')}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No details.</div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

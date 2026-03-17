@@ -1,0 +1,144 @@
+_format_version: "3.0"
+_transform: true
+
+# Kong DB-less declarative config.
+#
+# Upstreams are set to `host.docker.internal` (best for running Kong in Docker
+# while your Node services run on your host machine). If you run everything in a
+# Docker network, replace `host.docker.internal` with the service/container names.
+
+plugins:
+  - name: cors
+    config:
+      origins:
+        - http://localhost:3000
+        - http://localhost:5173
+      methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Content-Type
+        - Authorization
+      exposed_headers:
+        - Content-Length
+      credentials: true
+      max_age: 3600
+
+services:
+  # -------------------------
+  # Atomic microservices
+  # -------------------------
+  - name: inventory
+    url: http://host.docker.internal:3000
+    routes:
+      - name: inventory-route
+        paths:
+          - /inventory
+        strip_path: false
+
+  - name: payment
+    url: http://host.docker.internal:3003
+    routes:
+      - name: payment-route
+        paths:
+          - /payments
+        strip_path: false
+
+  - name: order
+    url: http://host.docker.internal:3004
+    routes:
+      - name: order-route
+        paths:
+          - /orders
+        strip_path: false
+
+  - name: reward
+    url: http://host.docker.internal:3005
+    routes:
+      - name: reward-route
+        paths:
+          - /reward
+        strip_path: false
+
+  - name: account
+    url: http://host.docker.internal:3001
+    routes:
+      - name: account-route
+        paths:
+          - /account
+        strip_path: false
+
+  - name: notification
+    url: http://host.docker.internal:3006
+    routes:
+      - name: notification-route
+        paths:
+          - /notifications
+        strip_path: false
+
+  # -------------------------
+  # Composite / orchestrators
+  # -------------------------
+  - name: composite-recommendation
+    url: http://host.docker.internal:4000
+    routes:
+      - name: composite-recommendation-route
+        paths:
+          - /recommendations
+        strip_path: false
+      - name: composite-recommendation-prefixed-route
+        paths:
+          - /composite/recommendation
+        strip_path: true
+
+  - name: composite-place-order
+    url: http://host.docker.internal:4001
+    routes:
+      - name: composite-place-order-route
+        paths:
+          - /orders/place
+        strip_path: false
+      - name: composite-place-order-prefixed-route
+        paths:
+          - /composite/place-order
+        strip_path: true
+
+  - name: composite-upload-listing
+    url: http://host.docker.internal:4002
+    routes:
+      - name: composite-upload-listing-route
+        paths:
+          - /listings
+        strip_path: false
+      - name: composite-upload-listing-prefixed-route
+        paths:
+          - /composite/upload-listing
+        strip_path: true
+
+  - name: composite-remove-expired
+    url: http://host.docker.internal:4003
+    routes:
+      - name: composite-remove-expired-route
+        paths:
+          - /cleanup
+        strip_path: false
+      - name: composite-remove-expired-prefixed-route
+        paths:
+          - /composite/remove-expired
+        strip_path: true
+
+  - name: composite-checkout
+    url: http://host.docker.internal:4004
+    routes:
+      - name: composite-checkout-route
+        paths:
+          - /checkout
+        strip_path: false
+      - name: composite-checkout-prefixed-route
+        paths:
+          - /composite/checkout
+        strip_path: true

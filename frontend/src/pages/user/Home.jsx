@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { SearchIcon, XIcon } from 'lucide-react';
+import { ChevronLeftIcon, HeartIcon, MinusIcon, PlusIcon, SearchIcon, XIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
+import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -110,12 +112,20 @@ export default function UserHome() {
   const inventoryServiceUrl =
     import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
 
+  const navigate = useNavigate();
+  const { addToCart } = useAuth();
+
   const [searchQuery, setSearchQuery] = useState('');
   const [activeListings, setActiveListings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
+  const [orderQty, setOrderQty] = useState(0);
+  const [pickupTime, setPickupTime] = useState('');
+  const [addConfirmOpen, setAddConfirmOpen] = useState(false);
+  const [addConfirmMessage, setAddConfirmMessage] = useState('');
+  const [addCartError, setAddCartError] = useState(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -168,6 +178,29 @@ export default function UserHome() {
   const handleCardClick = (item) => {
     setSelectedItem(item);
     setDetailsOpen(true);
+  };
+
+  useEffect(() => {
+    setOrderQty(0);
+    setPickupTime('');
+    setAddCartError(null);
+  }, [selectedItem]);
+
+  const handleAddToCart = async () => {
+    if (!selectedItem || !selected) return;
+    setAddCartError(null);
+    try {
+      await addToCart({
+        item: selectedItem,
+        quantity: orderQty,
+        pickupTime,
+      });
+      setDetailsOpen(false);
+      setAddConfirmMessage(`${orderQty} × ${selected.itemName} added to cart`);
+      setAddConfirmOpen(true);
+    } catch (e) {
+      setAddCartError(e?.message || 'Failed to add to cart');
+    }
   };
 
   const selected = useMemo(() => {
@@ -277,85 +310,171 @@ export default function UserHome() {
       )}
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="sm:max-w-2xl p-0 overflow-hidden">
+        <DialogContent className="sm:max-w-[420px] p-0 overflow-hidden rounded-3xl">
           {selected ? (
             <>
-              <div className="relative">
-                <img
-                  src={selected.imageURL || "/logo.png"}
-                  alt={selected.itemName}
-                  className={`w-full h-56 sm:h-64 ${selected.imageURL ? "object-cover" : "object-contain p-10 bg-muted"}`}
-                />
-                {selected.discount > 0 && (
-                  <div className="absolute top-4 left-4 rounded-full bg-foreground/90 text-background px-3 py-1 text-xs font-semibold">
-                    -{selected.discount}% off
-                  </div>
-                )}
-                <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/55 via-black/0 to-black/0" />
-                <div className="absolute inset-x-0 bottom-0 p-4 sm:p-5 text-white">
-                  <p className="text-sm/5 opacity-90">
+              <div className="bg-background">
+                <div className="flex items-center justify-between px-4 pt-4">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setDetailsOpen(false)}
+                    aria-label="Back"
+                  >
+                    <ChevronLeftIcon className="size-4" />
+                  </Button>
+                  <p className="text-sm font-semibold text-foreground truncate max-w-[240px]">
                     {selected.restaurantName ?? selected.restaurantId ?? 'Restaurant'}
                   </p>
-                  <h2 className="text-xl sm:text-2xl font-semibold leading-tight">
-                    {selected.itemName}
-                  </h2>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Favorite"
+                    disabled
+                    title="Favorites coming soon"
+                  >
+                    <HeartIcon className="size-4" />
+                  </Button>
                 </div>
-              </div>
 
-              <div className="p-4 sm:p-5 grid gap-5 sm:grid-cols-5">
-                <div className="sm:col-span-3 flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {selected.cuisineType && (
-                      <span className="text-xs bg-muted text-muted-foreground rounded-full px-2.5 py-1">
+                <div className="px-6 pt-4">
+                  <div className="mx-auto size-44 sm:size-52 rounded-3xl bg-muted/40 ring-1 ring-border flex items-center justify-center overflow-hidden">
+                    <img
+                      src={selected.imageURL || "/logo.png"}
+                      alt={selected.itemName}
+                      className={selected.imageURL ? "h-full w-full object-cover" : "h-full w-full object-contain p-8"}
+                      loading="lazy"
+                    />
+                  </div>
+                </div>
+
+                <div className="px-6 pt-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="text-xl font-semibold leading-tight">{selected.itemName}</h2>
+                    {selected.cuisineType ? (
+                      <span className="mt-0.5 inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground whitespace-nowrap">
                         {selected.cuisineType}
                       </span>
-                    )}
-                    <span className="text-xs bg-muted text-muted-foreground rounded-full px-2.5 py-1">
-                      Qty: {selected.quantity}
-                    </span>
-                    {selected.expiryDate && (
-                      <span className="text-xs bg-muted text-muted-foreground rounded-full px-2.5 py-1">
-                        Expires {selected.expiryDate.toLocaleString()}
-                      </span>
-                    )}
+                    ) : null}
                   </div>
+                </div>
 
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-2xl font-bold">${selected.price.toFixed(2)}</span>
-                    {selected.originalPrice !== null && selected.discount > 0 && (
-                      <span className="text-sm text-muted-foreground line-through">
-                        ${selected.originalPrice.toFixed(2)}
-                      </span>
-                    )}
-                  </div>
-
+                <div className="px-6 pt-4">
                   <p className="text-sm text-muted-foreground leading-relaxed">
                     {selected.description || 'No description provided.'}
                   </p>
                 </div>
 
-                <div className="sm:col-span-2">
-                  <div className="rounded-2xl bg-muted/30 ring-1 ring-border p-4 flex flex-col gap-3">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Restaurant</p>
-                      <p className="text-sm font-semibold">
-                        {selected.restaurantName ?? selected.restaurantId ?? '—'}
+                <div className="px-6 pt-4">
+                  <div className="grid grid-cols-3 gap-3 text-center">
+                    <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                      <p className="text-sm font-semibold text-foreground">
+                        ${selected.price.toFixed(2)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">Price</p>
+                    </div>
+                    <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                      <p className="text-sm font-semibold text-foreground">{selected.quantity}</p>
+                      <p className="mt-1 text-[11px] text-muted-foreground">Quantity</p>
+                    </div>
+                    <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                      {selected.expiryDate ? (
+                        <>
+                          <p className="text-sm font-semibold text-foreground">
+                            {selected.expiryDate.toLocaleDateString()}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {selected.expiryDate.toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-semibold text-foreground">—</p>
+                      )}
+                      <p className="mt-1 text-[11px] text-muted-foreground">Expiry</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-6 pt-5 pb-24">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="grid gap-2">
+                      <p className="text-xs font-medium text-muted-foreground">Choose quantity</p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          onClick={() => setOrderQty((q) => Math.max(0, q - 1))}
+                          disabled={orderQty <= 0}
+                          aria-label="Decrease quantity"
+                        >
+                          <MinusIcon className="size-4" />
+                        </Button>
+                        <div className="w-10 text-center text-base font-semibold">{orderQty}</div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon-sm"
+                          onClick={() =>
+                            setOrderQty((q) =>
+                              selected.quantity > 0 ? Math.min(selected.quantity, q + 1) : q + 1
+                            )
+                          }
+                          disabled={selected.quantity > 0 ? orderQty >= selected.quantity : false}
+                          aria-label="Increase quantity"
+                        >
+                          <PlusIcon className="size-4" />
+                        </Button>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        {selected.quantity > 0 ? `${selected.quantity} left` : 'In stock'}
                       </p>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-xl bg-background/70 ring-1 ring-border p-3">
-                        <p className="text-xs text-muted-foreground">Price</p>
-                        <p className="text-sm font-semibold">${selected.price.toFixed(2)}</p>
-                      </div>
-                      <div className="rounded-xl bg-background/70 ring-1 ring-border p-3">
-                        <p className="text-xs text-muted-foreground">Quantity</p>
-                        <p className="text-sm font-semibold">{selected.quantity}</p>
-                      </div>
+
+                    <div className="grid gap-2">
+                      <p className="text-xs font-medium text-muted-foreground">Pickup time</p>
+                      <input
+                        type="time"
+                        value={pickupTime}
+                        onChange={(e) => setPickupTime(e.target.value)}
+                        className="h-10 w-full rounded-2xl border border-input bg-background px-3 text-sm"
+                      />
+                      <p className="text-[11px] text-muted-foreground">Required to order</p>
                     </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Expiry</p>
-                      <p className="text-sm font-semibold">
-                        {selected.expiryDate ? selected.expiryDate.toLocaleString() : '—'}
+                  </div>
+                </div>
+
+                <div className="absolute inset-x-0 bottom-0 p-4 bg-background/80 supports-backdrop-filter:backdrop-blur border-t border-border">
+                  {addCartError && (
+                    <div className="mb-3 text-xs text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
+                      {addCartError}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3">
+                    <Button
+                      type="button"
+                      className="flex-1 rounded-2xl h-11"
+                      disabled={orderQty < 1 || !pickupTime}
+                      title={
+                        orderQty < 1
+                          ? 'Select quantity'
+                          : !pickupTime
+                            ? 'Select pickup time'
+                            : undefined
+                      }
+                      onClick={handleAddToCart}
+                    >
+                      Add to cart
+                    </Button>
+                    <div className="text-right">
+                      <p className="text-[11px] text-muted-foreground">Total</p>
+                      <p className="text-lg font-bold text-foreground">
+                        ${(selected.price * Math.max(0, orderQty)).toFixed(2)}
                       </p>
                     </div>
                   </div>
@@ -368,6 +487,29 @@ export default function UserHome() {
               <span className="text-sm text-muted-foreground">Loading details...</span>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={addConfirmOpen} onOpenChange={setAddConfirmOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Added to cart</DialogTitle>
+            <DialogDescription>{addConfirmMessage || 'Item added to cart.'}</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setAddConfirmOpen(false)}>
+              Continue
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setAddConfirmOpen(false);
+                navigate('/cart');
+              }}
+            >
+              View cart
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

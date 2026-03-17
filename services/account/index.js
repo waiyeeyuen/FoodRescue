@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { db } from '../firebase/firebaseAdmin.js'
+import admin, { db } from '../firebase/firebaseAdmin.js'
 
 const app = express()
 
@@ -39,6 +39,7 @@ app.post('/account/register', async (req, res) => {
       username,
       email,
       password: hashedPassword,
+      cart: [],
       createdAt: new Date()
     };
 
@@ -75,6 +76,7 @@ app.post('/account/restaurant/register', async (req, res) => {
       restaurantName,
       email,
       password: hashedPassword,
+      cart: [],
       createdAt: new Date()
     };
 
@@ -176,6 +178,153 @@ app.get('/account/:id', async (req, res) => {
 
     res.json({ id: doc.id, ...safeData });
 
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function normalizeCartItem(input) {
+  const listingId =
+    input?.listingId ||
+    input?.ListingId ||
+    input?.id ||
+    input?.Id ||
+    input?.listing_id ||
+    input?.listingID;
+
+  const itemName = input?.itemName || input?.ItemName || input?.name || input?.Name;
+  const restaurantId = input?.restaurantId || input?.RestaurantId;
+  const restaurantName = input?.restaurantName || input?.RestaurantName;
+  const imageURL = input?.imageURL || input?.ImageURL || input?.imageUrl || input?.ImageUrl || '';
+  const expiryTime = input?.expiryTime || input?.ExpiryTime || '';
+  const cuisineType = input?.cuisineType || input?.CuisineType || '';
+
+  const priceRaw = input?.price ?? input?.Price ?? 0;
+  const price = Number(priceRaw);
+
+  return {
+    listingId: String(listingId || ''),
+    itemName: String(itemName || ''),
+    restaurantId: restaurantId ? String(restaurantId) : '',
+    restaurantName: restaurantName ? String(restaurantName) : '',
+    imageURL: imageURL ? String(imageURL) : '',
+    expiryTime: expiryTime ? String(expiryTime) : '',
+    cuisineType: cuisineType ? String(cuisineType) : '',
+    price: Number.isFinite(price) ? price : 0
+  };
+}
+
+// CART: Get cart for a user
+app.get('/account/:id/cart', async (req, res) => {
+  try {
+    const docRef = USERS.doc(req.params.id);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+    const data = doc.data() || {};
+    const cart = Array.isArray(data.cart) ? data.cart : [];
+    res.json({ cart });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CART: Add item (merge by listingId)
+app.post('/account/:id/cart/items', async (req, res) => {
+  try {
+    const { item, quantity, pickupTime } = req.body || {};
+    const normalized = normalizeCartItem(item || req.body);
+
+    if (!normalized.listingId) {
+      return res.status(400).json({ error: 'listingId is required' });
+    }
+
+    const qty = Number(quantity ?? req.body?.qty ?? 1);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: 'quantity must be a positive number' });
+    }
+
+    const docRef = USERS.doc(req.params.id);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+
+    const data = doc.data() || {};
+    const cart = Array.isArray(data.cart) ? data.cart.slice() : [];
+
+    const idx = cart.findIndex(
+      (c) => String(c?.listingId || '') === String(normalized.listingId)
+    );
+
+    const pickup = pickupTime ?? req.body?.pickup_time ?? '';
+
+    if (idx >= 0) {
+      const existing = cart[idx] || {};
+      const existingQty = Number(existing.quantity ?? 0);
+      cart[idx] = {
+        ...existing,
+        ...normalized,
+        quantity: (Number.isFinite(existingQty) ? existingQty : 0) + qty,
+        pickupTime: pickup ? String(pickup) : (existing.pickupTime || ''),
+        updatedAt: new Date().toISOString()
+      };
+    } else {
+      cart.push({
+        ...normalized,
+        quantity: qty,
+        pickupTime: pickup ? String(pickup) : '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    await docRef.update({
+      cart,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.status(200).json({ cart });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CART: Remove item by listingId
+app.delete('/account/:id/cart/items/:listingId', async (req, res) => {
+  try {
+    const { id, listingId } = req.params;
+    const docRef = USERS.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+
+    const data = doc.data() || {};
+    const cart = Array.isArray(data.cart) ? data.cart : [];
+    const filtered = cart.filter(
+      (c) => String(c?.listingId || '') !== String(listingId)
+    );
+
+    await docRef.update({
+      cart: filtered,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ cart: filtered });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CART: Clear cart
+app.post('/account/:id/cart/clear', async (req, res) => {
+  try {
+    const docRef = USERS.doc(req.params.id);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+
+    await docRef.update({
+      cart: [],
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ cart: [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
