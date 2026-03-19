@@ -111,9 +111,12 @@ function ListingCard({ item }) {
 export default function UserHome() {
   const inventoryServiceUrl =
     import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
+  const recommendationServiceUrl =
+    import.meta.env.VITE_RECOMMENDATION_SERVICE_URL || 'http://localhost:4000';
 
   const navigate = useNavigate();
-  const { addToCart } = useAuth();
+  // ← added `user` here
+  const { user, addToCart } = useAuth();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeListings, setActiveListings] = useState([]);
@@ -133,21 +136,59 @@ export default function UserHome() {
       try {
         setLoading(true);
         setError(null);
-        const res = await fetch(`${inventoryServiceUrl}/inventory/active`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) {
-          let message = 'Failed to load active listings';
-          try {
-            const body = await res.json();
-            message = body?.error || message;
-          } catch {
-            // ignore
+
+        let listings = [];
+
+        if (user?.id) {
+          // Logged-in path: call composite recommendation service
+          const res = await fetch(
+            `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}`,
+            { signal: controller.signal }
+          );
+          if (!res.ok) {
+            let message = 'Failed to load recommendations';
+            try {
+              const body = await res.json();
+              message = body?.error || message;
+            } catch {
+              // ignore
+            }
+            throw new Error(message);
           }
-          throw new Error(message);
+          const data = await res.json();
+          const recommended = Array.isArray(data.recommendedListings) ? data.recommendedListings : [];
+          const fallback = Array.isArray(data.fallbackListings) ? data.fallbackListings : [];
+
+          // Deduplicate by listing id
+          const seen = new Set();
+          for (const item of [...recommended, ...fallback]) {
+            const id = getField(item, 'Id', 'id', 'listingId', 'ListingId');
+            const key = id !== undefined && id !== null ? String(id) : null;
+            if (key === null || !seen.has(key)) {
+              if (key !== null) seen.add(key);
+              listings.push(item);
+            }
+          }
+        } else {
+          // Guest fallback: call inventory service directly
+          const res = await fetch(`${inventoryServiceUrl}/inventory/active`, {
+            signal: controller.signal,
+          });
+          if (!res.ok) {
+            let message = 'Failed to load active listings';
+            try {
+              const body = await res.json();
+              message = body?.error || message;
+            } catch {
+              // ignore
+            }
+            throw new Error(message);
+          }
+          const data = await res.json();
+          listings = Array.isArray(data) ? data : [];
         }
-        const data = await res.json();
-        setActiveListings(Array.isArray(data) ? data : []);
+
+        setActiveListings(listings);
       } catch (e) {
         if (e?.name === 'AbortError') return;
         setError(e?.message || 'Failed to load active listings');
@@ -156,7 +197,7 @@ export default function UserHome() {
       }
     })();
     return () => controller.abort();
-  }, [inventoryServiceUrl]);
+  }, [inventoryServiceUrl, recommendationServiceUrl, user?.id]); // ← added user?.id
 
   const visibleListings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();

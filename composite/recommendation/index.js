@@ -152,12 +152,6 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Scenario 3: "Get Food Recommendation"
-// 1) UI calls: GET /recommendations/:userId
-// 2) Composite fetches Order history (user_id, status?)
-// 4) Composite fetches available Inventory listings
-// 6) Composite checks Reward eligibility (derived stamps_count)
-// 8) Composite returns recommendations + eligibility info
 app.get("/recommendations/:userId", async (req, res) => {
   const { userId } = req.params;
 
@@ -179,35 +173,56 @@ app.get("/recommendations/:userId", async (req, res) => {
   let inventoryListings = null;
   let rewardEligibility = null;
 
-  // 2) Get Order History
+  // Step 1 — Order service
+  let orderHistory = [];
   try {
     orderHistoryResponse = await fetchJson(
       `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`
     );
+    orderHistory = Array.isArray(orderHistoryResponse?.orderHistory)
+      ? orderHistoryResponse.orderHistory
+      : [];
+    console.log("Order hit! order history:", orderHistory);
   } catch (error) {
     orderHistoryResponse = {
       success: false,
       error: error.message,
       status: error.status || 500
     };
+    orderHistory = [];
+    console.log("Order hit! order history:", []);
   }
-
-  const orderHistory = Array.isArray(orderHistoryResponse?.orderHistory)
-    ? orderHistoryResponse.orderHistory
-    : [];
 
   const stampsCount = orderHistory.length;
 
-  // 6) Check Rewards Eligibility (Reward service takes userId; we also include stampsCount as metadata)
+  // Step 2 — Inventory service (unconditional)
+  let listings = [];
+  try {
+    inventoryListings = await fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`);
+    listings = Array.isArray(inventoryListings) ? inventoryListings : [];
+    console.log("Inventory hit! listings:", listings);
+  } catch (error) {
+    inventoryListings = {
+      success: false,
+      error: error.message,
+      status: error.status || 500
+    };
+    listings = [];
+    console.log("Inventory hit! listings:", []);
+  }
+
+  // Step 3 — Reward service
   try {
     const rewardPayload = await fetchJson(
       `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}`
     );
+    const eligible = rewardPayload?.IsEligible ?? rewardPayload?.eligible ?? false;
     rewardEligibility = {
       success: true,
       stampsCount,
       data: rewardPayload
     };
+    console.log("Rewards hit! reward eligibility:", eligible);
   } catch (error) {
     rewardEligibility = {
       success: false,
@@ -215,24 +230,11 @@ app.get("/recommendations/:userId", async (req, res) => {
       error: error.message,
       status: error.status || 500
     };
-  }
-
-  // 4) Get Available Items
-  if (includeActive) {
-    try {
-      inventoryListings = await fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`);
-    } catch (error) {
-      inventoryListings = {
-        success: false,
-        error: error.message,
-        status: error.status || 500
-      };
-    }
+    console.log("Rewards hit! reward eligibility:", false);
   }
 
   const { topNames, topCategories } = pickTopSignals(orderHistory, maxSignals);
 
-  // If the UI supplies listing_id(s), filter the available items to those first.
   const filteredListings = Array.isArray(inventoryListings)
     ? inventoryListings.filter((listing) => {
         if (requestedListingIds.length === 0) return true;
@@ -254,7 +256,6 @@ app.get("/recommendations/:userId", async (req, res) => {
     .slice(0, maxListings)
     .map((row) => row.listing);
 
-  // Fallback: if no signals match, just return a small slice of available items.
   const fallbackListings =
     recommended.length > 0
       ? []

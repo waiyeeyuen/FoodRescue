@@ -15,12 +15,10 @@ app.use(express.json())
 
 const ORDERS = db.collection('orders')
 
-// Utility function to generate order ID
 function generateOrderId() {
   return 'ORD_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-// Utility function to validate order data
 function validateOrderData(data) {
   const errors = [];
   
@@ -40,7 +38,6 @@ app.post('/orders', async (req, res) => {
   try {
     const { customerId, items, totalPrice, notes } = req.body;
     
-    // Validate input
     const errors = validateOrderData({ customerId, items, totalPrice });
     if (errors.length > 0) {
       return res.status(400).json({ error: 'Validation failed', details: errors });
@@ -79,19 +76,17 @@ app.post('/orders', async (req, res) => {
   }
 });
 
-// GET ALL ORDERS (for history and recommendations)
+// GET ALL ORDERS
 app.get('/orders', async (req, res) => {
   try {
     const { customerId, limit = 50, offset = 0 } = req.query;
     
     let query = ORDERS;
 
-    // Filter by customerId if provided
     if (customerId) {
       query = query.where('customerId', '==', customerId);
     }
 
-    // Order by creation time (newest first)
     query = query.orderBy('createdAt', 'desc');
 
     const snapshot = await query.get();
@@ -103,7 +98,6 @@ app.get('/orders', async (req, res) => {
       updatedAt: doc.data().updatedAt?.toDate?.() || doc.data().updatedAt
     }));
 
-    // Apply pagination
     const paginatedOrders = allOrders.slice(
       parseInt(offset),
       parseInt(offset) + parseInt(limit)
@@ -122,35 +116,7 @@ app.get('/orders', async (req, res) => {
   }
 });
 
-// GET SPECIFIC ORDER
-app.get('/orders/:orderId', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-
-    const doc = await ORDERS.doc(orderId).get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    const orderData = doc.data();
-    res.json({
-      success: true,
-      order: {
-        id: doc.id,
-        ...orderData,
-        createdAt: orderData.createdAt?.toDate?.() || orderData.createdAt,
-        updatedAt: orderData.updatedAt?.toDate?.() || orderData.updatedAt
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-// GET ORDER HISTORY FOR RECOMMENDATIONS
+// GET ORDER HISTORY FOR RECOMMENDATIONS ← moved above /orders/:orderId
 app.get('/orders/customer/:customerId/history', async (req, res) => {
   try {
     const { customerId } = req.params;
@@ -173,7 +139,6 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
       };
     });
 
-    // Aggregate items for recommendations
     const itemFrequency = {};
     const categoryPreferences = {};
 
@@ -200,6 +165,33 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
         preferredCategories: Object.entries(categoryPreferences)
           .sort((a, b) => b[1] - a[1])
           .map(([category, count]) => ({ category, frequency: count }))
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET SPECIFIC ORDER ← stays after the specific route above
+app.get('/orders/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const doc = await ORDERS.doc(orderId).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const orderData = doc.data();
+    res.json({
+      success: true,
+      order: {
+        id: doc.id,
+        ...orderData,
+        createdAt: orderData.createdAt?.toDate?.() || orderData.createdAt,
+        updatedAt: orderData.updatedAt?.toDate?.() || orderData.updatedAt
       }
     });
 
