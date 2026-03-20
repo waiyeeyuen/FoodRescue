@@ -6,3 +6,5 @@
 
 # Node dependencies
 **/node_modules
+
+**/.env
