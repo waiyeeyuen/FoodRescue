@@ -31,7 +31,7 @@ function ListingCard({ item, aiRecommended = false, aiReason = null }) {
   const itemName = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
   const description = getField(item, 'description', 'Description');
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
-  const imageURL = toImageSrc(getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl'));
+  const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
   const restaurantId = getField(item, 'restaurantId', 'RestaurantId');
   const quantity = Number(getField(item, 'quantity', 'Quantity') ?? 0);
@@ -152,15 +152,11 @@ export default function UserHome() {
   const [addCartError, setAddCartError] = useState(null);
 
   useEffect(() => {
-    let activeController = null;
-    let intervalId = null;
+    const controller = new AbortController();
 
-    const loadActiveListings = async ({ showLoading = false } = {}) => {
-      const controller = new AbortController();
-      activeController = controller;
-
+    const loadActiveListings = async () => {
       try {
-        if (showLoading) setLoading(true);
+        setLoading(true);
         setError(null);
 
         let listings = [];
@@ -215,9 +211,11 @@ export default function UserHome() {
         if (e?.name === 'AbortError') return;
         setError(e?.message || 'Failed to load active listings');
       } finally {
-        if (showLoading) setLoading(false);
+        setLoading(false);
       }
-    })();
+    };
+
+    loadActiveListings();
     return () => controller.abort();
   }, [inventoryServiceUrl, recommendationServiceUrl, user?.id]);
 
