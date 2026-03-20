@@ -20,11 +20,22 @@ function getField(item, ...keys) {
   return undefined;
 }
 
+function toImageSrc(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  if (raw.includes('/')) {
+    return `https://res.cloudinary.com/dpcwnbkis/image/upload/${raw}`;
+  }
+  return null;
+}
+
 function ListingCard({ item }) {
   const itemName = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
   const description = getField(item, 'description', 'Description');
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
-  const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
+  const imageURL = toImageSrc(getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl'));
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
   const restaurantId = getField(item, 'restaurantId', 'RestaurantId');
   const quantity = Number(getField(item, 'quantity', 'Quantity') ?? 0);
@@ -128,10 +139,15 @@ export default function UserHome() {
   const [addCartError, setAddCartError] = useState(null);
 
   useEffect(() => {
-    const controller = new AbortController();
-    (async () => {
+    let activeController = null;
+    let intervalId = null;
+
+    const loadActiveListings = async ({ showLoading = false } = {}) => {
+      const controller = new AbortController();
+      activeController = controller;
+
       try {
-        setLoading(true);
+        if (showLoading) setLoading(true);
         setError(null);
         const res = await fetch(`${inventoryServiceUrl}/inventory/active`, {
           signal: controller.signal,
@@ -152,10 +168,22 @@ export default function UserHome() {
         if (e?.name === 'AbortError') return;
         setError(e?.message || 'Failed to load active listings');
       } finally {
-        setLoading(false);
+        if (showLoading) setLoading(false);
       }
-    })();
-    return () => controller.abort();
+    };
+
+    loadActiveListings({ showLoading: true });
+
+    // Refresh active listings every minute so expired items drop off automatically.
+    intervalId = setInterval(() => {
+      if (activeController) activeController.abort();
+      loadActiveListings();
+    }, 60 * 1000);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      if (activeController) activeController.abort();
+    };
   }, [inventoryServiceUrl]);
 
   const visibleListings = useMemo(() => {

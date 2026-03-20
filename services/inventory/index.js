@@ -1,5 +1,8 @@
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import multer from 'multer'
+import { v2 as cloudinary } from 'cloudinary'
 import {db} from '../firebase/firebaseAdmin.js'
 
 const app = express()
@@ -11,6 +14,24 @@ const corsOptions = {
 };
 app.use(cors(corsOptions))
 app.use(express.json())
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+})
+
+const cloudinaryConfigured =
+  Boolean(process.env.CLOUDINARY_CLOUD_NAME) &&
+  Boolean(process.env.CLOUDINARY_API_KEY) &&
+  Boolean(process.env.CLOUDINARY_API_SECRET)
+
+if (cloudinaryConfigured) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  })
+}
 
 const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
@@ -32,6 +53,32 @@ async function readOutsystemsBody(response) {
   } catch {
     return raw;
   }
+}
+
+function fileToDataUri(file) {
+  return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
+}
+
+function toCloudinaryPublicId(value) {
+  if (!value) return ''
+  const raw = String(value).trim()
+  if (!raw) return ''
+
+  // If it is already a public id-like value, keep it.
+  if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+
+  // Convert full Cloudinary delivery URL to public_id to keep payload short.
+  const marker = '/image/upload/'
+  const markerIndex = raw.indexOf(marker)
+  if (markerIndex === -1) return raw
+
+  let pathPart = raw.slice(markerIndex + marker.length)
+  const queryIndex = pathPart.indexOf('?')
+  if (queryIndex >= 0) pathPart = pathPart.slice(0, queryIndex)
+
+  const versionMatch = pathPart.match(/^v\d+\/(.+)$/)
+  const publicIdWithExt = versionMatch ? versionMatch[1] : pathPart
+  return publicIdWithExt.replace(/\.[^/.]+$/, '')
 }
 
 async function createListing(req, res) {
@@ -72,6 +119,8 @@ async function createListing(req, res) {
       return res.status(400).json({ error: 'restaurantName, itemName, expiryTime must be non-empty' });
     }
 
+    const normalizedImageRef = toCloudinaryPublicId(imageURL)
+
     const params = new URLSearchParams({
       restaurantId: String(restaurantId),
       restaurantName: normalizedRestaurantName,
@@ -81,7 +130,7 @@ async function createListing(req, res) {
       originalPrice: originalPrice != null && originalPrice !== '' ? String(Number(originalPrice)) : '',
       quantity: String(Number(quantity)),
       expiryTime: normalizedExpiryTime, // e.g. "2026-03-31T23:59:59.938Z"
-      imageURL: imageURL ?? '',
+      imageURL: normalizedImageRef,
       cuisineType: cuisineType ?? '',
     });
 
@@ -122,6 +171,50 @@ app.post('/inventory/listings', createListing);
 
 // Backward-compat alias
 app.post('/inventory/createListing', createListing);
+
+// Upload listing image to Cloudinary
+app.post('/inventory/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    if (!cloudinaryConfigured) {
+      return res.status(500).json({
+        error: 'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET in services/inventory/.env',
+      })
+    }
+
+    const imageUrlInput = req.body?.imageUrl ? String(req.body.imageUrl).trim() : ''
+    let uploadSource = null
+
+    if (req.file) {
+      uploadSource = fileToDataUri(req.file)
+    } else if (imageUrlInput) {
+      uploadSource = imageUrlInput
+    }
+
+    if (!uploadSource) {
+      return res.status(400).json({ error: 'image file or imageUrl is required' })
+    }
+
+    const shortId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    const publicId = `fr/${shortId}`
+
+    const uploadResult = await cloudinary.uploader.upload(uploadSource, {
+      public_id: publicId,
+      overwrite: false,
+      resource_type: 'image',
+    })
+
+    return res.status(201).json({
+      url: uploadResult.secure_url,
+      imageRef: uploadResult.public_id,
+      publicId: uploadResult.public_id,
+      width: uploadResult.width,
+      height: uploadResult.height,
+      format: uploadResult.format,
+    })
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Image upload failed' })
+  }
+})
 
 // Get all active listings
 app.get('/inventory/active', async (req, res) => {

@@ -7,8 +7,11 @@
     "dev": "node index.js"
   },
   "dependencies": {
+    "cloudinary": "^2.8.0",
     "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
     "express": "^5.2.1",
-    "firebase-admin": "^13.7.0"
+    "firebase-admin": "^13.7.0",
+    "multer": "^2.0.2"
   }
 }
