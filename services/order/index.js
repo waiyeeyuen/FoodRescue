@@ -116,7 +116,7 @@ app.get('/orders', async (req, res) => {
   }
 });
 
-// GET ORDER HISTORY FOR RECOMMENDATIONS ← moved above /orders/:orderId
+// GET ORDER HISTORY FOR RECOMMENDATIONS
 app.get('/orders/customer/:customerId/history', async (req, res) => {
   try {
     const { customerId } = req.params;
@@ -140,14 +140,13 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
     });
 
     const itemFrequency = {};
-    const categoryPreferences = {};
 
     orderHistory.forEach(order => {
       order.items.forEach(item => {
-        itemFrequency[item.itemId] = (itemFrequency[item.itemId] || 0) + item.quantity;
-        
-        if (item.category) {
-          categoryPreferences[item.category] = (categoryPreferences[item.category] || 0) + 1;
+        // Use item.id or fall back to item.name as the key
+        const itemKey = item.id || item.name;
+        if (itemKey) {
+          itemFrequency[itemKey] = (itemFrequency[itemKey] || 0) + item.quantity;
         }
       });
     });
@@ -162,9 +161,7 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
           .sort((a, b) => b[1] - a[1])
           .slice(0, 5)
           .map(([itemId, count]) => ({ itemId, purchaseCount: count })),
-        preferredCategories: Object.entries(categoryPreferences)
-          .sort((a, b) => b[1] - a[1])
-          .map(([category, count]) => ({ category, frequency: count }))
+        preferredCategories: []
       }
     });
 
@@ -173,7 +170,7 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
   }
 });
 
-// GET SPECIFIC ORDER ← stays after the specific route above
+// GET SPECIFIC ORDER
 app.get('/orders/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;

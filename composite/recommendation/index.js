@@ -12,6 +12,8 @@ const INVENTORY_SERVICE_URL = process.env.INVENTORY_SERVICE_URL || "http://local
 const REWARD_SERVICE_URL = process.env.REWARD_SERVICE_URL || "http://localhost:3005";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 
+console.log("Gemini key loaded:", GEMINI_API_KEY?.slice(0, 8) + "...");
+
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
   .split(",")
   .map((v) => v.trim())
@@ -19,6 +21,9 @@ const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://l
 
 app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
+
+const geminiCache = new Map();
+const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function getField(obj, ...keys) {
   for (const key of keys) {
@@ -120,7 +125,6 @@ function scoreListing(listing, topNames, topCategories) {
   return { score, reasons };
 }
 
-// --- Gemini call ---
 async function callGemini(topNames, topCategories, listings) {
   if (!GEMINI_API_KEY) {
     return { used: false, reasoning: "No Gemini API key provided.", orderedIds: null };
@@ -151,7 +155,7 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -251,6 +255,7 @@ app.get("/recommendations/:userId", async (req, res) => {
   }
 
   const { topNames, topCategories } = pickTopSignals(orderHistory, maxSignals);
+  console.log("Signals:", { topNames, topCategories });
 
   const filteredListings = Array.isArray(inventoryListings)
     ? inventoryListings.filter((listing) => {
@@ -260,8 +265,18 @@ app.get("/recommendations/:userId", async (req, res) => {
       })
     : [];
 
-  // Step 4 — Gemini reranking
-  const gemini = await callGemini(topNames, topCategories, filteredListings);
+  // Step 4 — Gemini reranking (with cache)
+  const cacheKey = userId;
+  const cached = geminiCache.get(cacheKey);
+  let gemini;
+
+  if (cached && cached.expiresAt > Date.now()) {
+    console.log("Gemini cache hit for user:", userId);
+    gemini = cached.result;
+  } else {
+    gemini = await callGemini(topNames, topCategories, filteredListings);
+    geminiCache.set(cacheKey, { result: gemini, expiresAt: Date.now() + GEMINI_CACHE_TTL_MS });
+  }
 
   let recommended = [];
 
@@ -276,14 +291,19 @@ app.get("/recommendations/:userId", async (req, res) => {
       .map((id, idx) => {
         const listing = listingMap.get(String(id));
         if (!listing) return null;
-        return idx < 3
-          ? { ...listing, aiRecommended: true, aiReason: "Recommended based on your order history" }
-          : listing;
+        if (idx < 3) {
+          const { reasons } = scoreListing(listing, topNames, topCategories);
+          const matchedValues = [...new Set(reasons.map((r) => r.value))];
+          const aiReason = matchedValues.length > 0
+            ? `Matches your taste: ${matchedValues.join(", ")}`
+            : `You've ordered "${getField(listing, "itemName", "ItemName", "name", "Name") ?? "this"}" before`;
+          return { ...listing, aiRecommended: true, aiReason };
+        }
+        return listing;
       })
       .filter(Boolean)
       .slice(0, maxListings);
   } else {
-    // Fallback: frequency scoring — tag top 3 with aiRecommended and reason
     recommended = filteredListings
       .map((listing) => {
         const { score, reasons } = scoreListing(listing, topNames, topCategories);
@@ -292,10 +312,8 @@ app.get("/recommendations/:userId", async (req, res) => {
       .sort((a, b) => b.score - a.score)
       .slice(0, maxListings)
       .map((row, idx) => {
-        if (idx < 3) {
-          const reasonText = row.reasons.length > 0
-            ? `Matches your taste: ${[...new Set(row.reasons.map((r) => r.value))].join(", ")}`
-            : "Top pick for you";
+        if (idx < 3 && row.reasons.length > 0) {
+          const reasonText = `Matches your taste: ${[...new Set(row.reasons.map((r) => r.value))].join(", ")}`;
           return { ...row.listing, aiRecommended: true, aiReason: reasonText };
         }
         return row.listing;
