@@ -23,9 +23,7 @@ export async function createStripeCheckoutSession({
     line_items: items.map((item) => ({
       price_data: {
         currency: currency || "sgd",
-        product_data: {
-          name: item.name
-        },
+        product_data: { name: item.name },
         unit_amount: item.unitAmount
       },
       quantity: item.quantity
@@ -38,20 +36,9 @@ export async function createStripeCheckoutSession({
 }
 
 export async function createStripeRefund({ paymentIntentId, amount, reason }) {
-  const refundPayload = {
-    payment_intent: paymentIntentId
-  };
-
-  if (amount) {
-    refundPayload.amount = amount;
-  }
-
-  if (reason) {
-    refundPayload.metadata = {
-      reason
-    };
-  }
-
+  const refundPayload = { payment_intent: paymentIntentId };
+  if (amount) refundPayload.amount = amount;
+  if (reason) refundPayload.metadata = { reason };
   const refund = await stripe.refunds.create(refundPayload);
   return refund;
 }

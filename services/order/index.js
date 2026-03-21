@@ -6,7 +6,7 @@ const app = express()
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 
@@ -21,7 +21,6 @@ function generateOrderId() {
 
 function validateOrderData(data) {
   const errors = [];
-  
   if (!data.customerId) errors.push('customerId is required');
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) {
     errors.push('items array is required and must not be empty');
@@ -29,21 +28,21 @@ function validateOrderData(data) {
   if (typeof data.totalPrice !== 'number' || data.totalPrice < 0) {
     errors.push('totalPrice must be a non-negative number');
   }
-  
   return errors;
 }
 
 // CREATE ORDER
 app.post('/orders', async (req, res) => {
   try {
-    const { customerId, items, totalPrice, notes } = req.body;
-    
+    const { orderId: incomingOrderId, customerId, items, totalPrice, notes, status } = req.body;
+
     const errors = validateOrderData({ customerId, items, totalPrice });
     if (errors.length > 0) {
       return res.status(400).json({ error: 'Validation failed', details: errors });
     }
 
-    const orderId = generateOrderId();
+    // ✅ Use the orderId passed by the consumer (same as payment metadata), or generate one
+    const orderId = incomingOrderId || generateOrderId();
     const now = new Date();
 
     const orderData = {
@@ -52,6 +51,7 @@ app.post('/orders', async (req, res) => {
       items,
       totalPrice,
       notes: notes || '',
+      status: status || 'pending_payment',
       createdAt: now,
       updatedAt: now,
       events: [
@@ -79,18 +79,22 @@ app.post('/orders', async (req, res) => {
 // GET ALL ORDERS
 app.get('/orders', async (req, res) => {
   try {
-    const { customerId, limit = 50, offset = 0 } = req.query;
-    
+    const { customerId, status, limit = 50, offset = 0 } = req.query;
+
     let query = ORDERS;
 
     if (customerId) {
       query = query.where('customerId', '==', customerId);
     }
 
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
     query = query.orderBy('createdAt', 'desc');
 
     const snapshot = await query.get();
-    
+
     const allOrders = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
@@ -116,6 +120,39 @@ app.get('/orders', async (req, res) => {
   }
 });
 
+// UPDATE ORDER STATUS
+app.patch('/orders/:orderId/status', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ error: 'status is required' });
+    }
+
+    const doc = await ORDERS.doc(orderId).get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const now = new Date();
+    await ORDERS.doc(orderId).update({
+      status,
+      updatedAt: now,
+      events: [...(doc.data().events || []), {
+        type: 'status_updated',
+        timestamp: now,
+        details: `Status changed to ${status}`
+      }]
+    });
+
+    res.json({ success: true, orderId, status });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET ORDER HISTORY FOR RECOMMENDATIONS
 app.get('/orders/customer/:customerId/history', async (req, res) => {
   try {
@@ -124,6 +161,7 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
 
     const snapshot = await ORDERS
       .where('customerId', '==', customerId)
+      .where('status', '==', 'confirmed')
       .orderBy('createdAt', 'desc')
       .limit(parseInt(limit))
       .get();
@@ -140,10 +178,8 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
     });
 
     const itemFrequency = {};
-
     orderHistory.forEach(order => {
       order.items.forEach(item => {
-        // Use item.id or fall back to item.name as the key
         const itemKey = item.id || item.name;
         if (itemKey) {
           itemFrequency[itemKey] = (itemFrequency[itemKey] || 0) + item.quantity;
@@ -174,7 +210,6 @@ app.get('/orders/customer/:customerId/history', async (req, res) => {
 app.get('/orders/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-
     const doc = await ORDERS.doc(orderId).get();
 
     if (!doc.exists) {
@@ -203,7 +238,6 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3004;
-
 app.listen(PORT, () => {
   console.log(`Order service running on port ${PORT}`);
 });

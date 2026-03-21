@@ -16,9 +16,7 @@ app.post(
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.json({
-    message: "Payment service is running"
-  });
+  res.json({ message: "Payment service is running" });
 });
 
 app.use("/payments", paymentRoutes);
