@@ -1,29 +1,25 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 
-// Layout components
 import UserLayout from './layouts/UserLayout';
 import RestaurantLayout from './layouts/RestaurantLayout';
 
-// Pages - Auth
 import AuthPage from './pages/AuthPage';
 
-// Pages - User (Consumer)
 import UserHome from './pages/user/Home';
 import UserMap from './pages/user/Map';
 import UserOrders from './pages/user/Orders';
 import UserFavorites from './pages/user/Favorites';
 import UserProfile from './pages/user/Profile';
 import UserCart from './pages/user/Cart';
+import PaymentSuccessPage from './pages/user/PaymentSuccess';
 
-// Pages - Restaurant (Merchant)
 import RestaurantListings from './pages/restaurant/Listings';
 import RestaurantOrders from './pages/restaurant/Orders';
 import RestaurantPayouts from './pages/restaurant/Payouts';
 import RestaurantProfile from './pages/restaurant/Profile';
 import RestaurantSettings from './pages/restaurant/Settings';
 
-// Simple protected route - just check if user exists
 function ProtectedRoute({ children }) {
   const { user } = useAuth();
   if (!user) return <Navigate to='/login' replace />;
@@ -33,11 +29,9 @@ function ProtectedRoute({ children }) {
 function App() {
   const { user } = useAuth();
   const location = useLocation();
-  
-  // Determine if user is a restaurant
+
   const isRestaurant = user?.restaurantName ? true : false;
 
-  // If user is logged in and tries to access root, redirect appropriately
   if (user && location.pathname === '/') {
     if (isRestaurant) {
       return <Navigate to='/restaurant' replace />;
@@ -46,11 +40,9 @@ function App() {
 
   return (
     <Routes>
-      {/* Authentication routes */}
       <Route path='/login' element={<AuthPage />} />
       <Route path='/auth' element={<Navigate to='/login' replace />} />
 
-      {/* User (Consumer) routes */}
       <Route
         path='/'
         element={
@@ -66,9 +58,9 @@ function App() {
         <Route path='favorites' element={<UserFavorites />} />
         <Route path='cart' element={<UserCart />} />
         <Route path='profile' element={<UserProfile />} />
+        <Route path='payment-success' element={<PaymentSuccessPage />} /> {/* ✅ new */}
       </Route>
 
-      {/* Restaurant (Merchant) routes */}
       <Route
         path='/restaurant'
         element={
@@ -85,7 +77,6 @@ function App() {
         <Route path='settings' element={<RestaurantSettings />} />
       </Route>
 
-      {/* Catch all - redirect to login */}
       <Route path='*' element={<Navigate to='/login' replace />} />
     </Routes>
   );

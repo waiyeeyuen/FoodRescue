@@ -8,3 +8,6 @@
 **/node_modules
 
 **/.env
+composite/recommendation/.env
+services/inventory/.env
+composite/recommendation/.env

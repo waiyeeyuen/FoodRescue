@@ -15,8 +15,9 @@ function formatMoney(value) {
 
 export default function UserCart() {
   const { user, cart, cartCount, cartLoading, removeFromCart, clearCart } = useAuth();
-  const checkoutBaseUrl =
-    import.meta.env.VITE_CHECKOUT_SERVICE_URL || 'http://localhost:4004';
+
+  const placeOrderBaseUrl =
+    import.meta.env.VITE_PLACE_ORDER_SERVICE_URL || 'http://localhost:4001';
 
   const [busyId, setBusyId] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
@@ -48,10 +49,13 @@ export default function UserCart() {
     setCheckoutError(null);
     try {
       setCheckoutLoading(true);
-      const items = (cart || []).map((c) => ({
+
+      // ✅ unitAmount instead of price — matches what composite expects
+      const cartPayload = (cart || []).map((c) => ({
         name: c.itemName || 'Item',
+        itemId: c.listingId || c.itemId,
         quantity: Number(c.quantity ?? 1),
-        price: Number(c.price ?? 0),
+        unitAmount: Number(c.price ?? 0),
       }));
 
       const notesLines = (cart || [])
@@ -62,23 +66,25 @@ export default function UserCart() {
         })
         .join('\n');
 
-      const res = await fetch(`${checkoutBaseUrl}/checkout`, {
+      const res = await fetch(`${placeOrderBaseUrl}/orders/place`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
-          items,
+          cart: cartPayload,
+          currency: 'sgd',
           notes: `Cart checkout\n${notesLines}`,
-          applyVoucher: false,
+          successUrl: `${window.location.origin}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${window.location.origin}/cart`,
         }),
       });
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Checkout failed');
 
       const checkoutUrl = data?.payment?.checkoutUrl;
       if (!checkoutUrl) throw new Error('Missing checkoutUrl from payment service');
 
-      await clearCart();
       window.location.href = checkoutUrl;
     } catch (e) {
       setCheckoutError(e?.message || 'Checkout failed');
@@ -226,4 +232,3 @@ export default function UserCart() {
     </div>
   );
 }
-
