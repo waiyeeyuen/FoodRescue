@@ -1,10 +1,9 @@
 import 'dotenv/config';
 import amqplib from 'amqplib';
 
-const RABBITMQ_URL     = process.env.RABBITMQ_URL     || 'amqp://guest:guest@localhost:5672';
-const ORDER_SERVICE_URL    = process.env.ORDER_SERVICE_URL    || 'http://localhost:3004';
-const PAYMENT_SERVICE_URL  = process.env.PAYMENT_SERVICE_URL  || 'http://localhost:3003';
-const OUTSYSTEMS_BASE  = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
+const RABBITMQ_URL         = process.env.RABBITMQ_URL             || 'amqp://guest:guest@localhost:5672';
+const PLACE_ORDER_URL      = process.env.PLACE_ORDER_SERVICE_URL  || 'http://localhost:4001';
+const OUTSYSTEMS_BASE      = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
 const QUEUE = 'order.stock_check';
 
@@ -20,44 +19,6 @@ async function getListingByName(itemName) {
   } catch {
     return null;
   }
-}
-
-async function triggerRefund(paymentId, amountMinor, reason) {
-  try {
-    const res = await fetch(`${PAYMENT_SERVICE_URL}/payments/${paymentId}/refund`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: amountMinor, reason }),
-    });
-    const data = await res.json().catch(() => ({}));
-    console.log(`[Consumer] ✅ Refund triggered for payment ${paymentId}:`, data?.message || data);
-  } catch (err) {
-    console.error(`[Consumer] ❌ Refund call failed:`, err.message);
-  }
-}
-
-async function createConfirmedOrder({ orderId, userId, items, totalPrice, currency, notes }) {
-  console.log('[Consumer] Sending order to order service:', JSON.stringify({
-    orderId, customerId: userId, items, totalPrice, currency, notes
-  }, null, 2));
-
-  const res = await fetch(`${ORDER_SERVICE_URL}/orders`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      orderId,
-      customerId: userId,
-      items,
-      totalPrice,
-      currency,
-      notes: notes || '',
-      status: 'confirmed',
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  console.log('[Consumer] Order service response:', JSON.stringify(data, null, 2));
-  if (!res.ok) throw new Error(data?.error || 'Order creation failed');
-  return data;
 }
 
 async function processMessage(payload) {
@@ -97,63 +58,37 @@ async function processMessage(payload) {
     }
   }
 
-  if (insufficientItems.length === 0) {
-    const totalPriceMajor = items.reduce(
-      (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
-    );
+  // Determine status
+  let status;
+  if (insufficientItems.length === 0)                 status = 'ok';
+  else if (insufficientItems.length === items.length) status = 'failed';
+  else                                                status = 'partial';
 
-    const orderPayload = {
+  console.log(`[Consumer] Stock check complete — status: ${status}`);
+
+  // Single delegating call to Place Order orchestrator
+  const res = await fetch(`${PLACE_ORDER_URL}/orders/inventory-result`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
       orderId,
-      userId,
-      items: items.map(i => ({
-        itemId: i.itemId || i.name,
-        name: i.name,
-        quantity: i.quantity,
-        unitAmountMinor: i.unitAmount,
-      })),
-      totalPrice: Number(totalPriceMajor.toFixed(2)),
-      currency,
-    };
-
-    console.log('[Consumer] ✅ All stock OK — creating confirmed order');
-    console.log('[Consumer] Order payload:', JSON.stringify(orderPayload, null, 2));
-    await createConfirmedOrder(orderPayload);
-    console.log(`[Consumer] ✅ Order ${orderId} confirmed and saved`);
-
-  } else if (insufficientItems.length === items.length) {
-    console.log(`[Consumer] ❌ All items out of stock — triggering full refund of ${amountTotal}`);
-    await triggerRefund(paymentId, amountTotal, 'inventory_conflict');
-
-  } else {
-    console.log(`[Consumer] ⚠️ Partial stock failure — refunding ${refundAmount} minor units`);
-
-    const partialTotal = confirmedItems.reduce(
-      (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
-    );
-
-    const partialOrderPayload = {
-      orderId,
-      userId,
-      items: confirmedItems.map(i => ({
-        itemId: i.itemId || i.name,
-        name: i.name,
-        quantity: i.quantity,
-        unitAmountMinor: i.unitAmount,
-      })),
-      totalPrice: Number(partialTotal.toFixed(2)),
-      currency,
-      notes: `Partial order — refunded: ${insufficientItems.map(i => i.name).join(', ')}`,
-    };
-
-    console.log('[Consumer] ⚠️ Partial order payload:', JSON.stringify(partialOrderPayload, null, 2));
-    await createConfirmedOrder(partialOrderPayload);
-    await triggerRefund(
       paymentId,
+      userId,
+      currency,
+      status,
+      confirmedItems,
+      insufficientItems,
       refundAmount,
-      `inventory_conflict: ${insufficientItems.map(i => i.name).join(', ')} out of stock`
-    );
-    console.log(`[Consumer] ⚠️ Partial order ${orderId} confirmed, refund issued`);
+      amountTotal,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Place Order responded ${res.status}: ${errText}`);
   }
+
+  console.log(`[Consumer] ✅ Place Order notified — order ${orderId} status: ${status}`);
 }
 
 async function startConsumer() {

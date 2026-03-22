@@ -7,15 +7,17 @@ dotenv.config();
 const app = express();
 
 const PORT = process.env.PORT || 4001;
-const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || "http://localhost:3003";
+const PAYMENT_SERVICE_URL     = process.env.PAYMENT_SERVICE_URL     || "http://localhost:3003";
+const ORDER_SERVICE_URL        = process.env.ORDER_SERVICE_URL        || "http://localhost:3004";
+const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
 
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
+  .split(",").map((v) => v.trim()).filter(Boolean);
 
 app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 async function readBody(response) {
   const contentType = response.headers.get("content-type") || "";
@@ -39,6 +41,15 @@ async function fetchJson(url, options) {
   return data;
 }
 
+// Fire-and-forget — never throws, never blocks
+function fireAndForget(url, body) {
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch((err) => console.warn(`[fire-and-forget] ${url} failed:`, err.message));
+}
+
 function toMinorUnits(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
@@ -51,15 +62,17 @@ function getItemName(item) {
   return item?.name || item?.itemName || item?.ItemName || item?.title || item?.itemId || "Item";
 }
 
-// ✅ Generate orderId here so it ties payment metadata → consumer → order service
 function generateOrderId() {
-  return 'ORD_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  return "ORD_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
 }
+
+// ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "composite-place-order" });
 });
 
+// Step 3 — UI calls this to begin order process
 app.post("/orders/place", async (req, res) => {
   try {
     const {
@@ -70,7 +83,7 @@ app.post("/orders/place", async (req, res) => {
       notes,
       currency,
       successUrl,
-      cancelUrl
+      cancelUrl,
     } = req.body || {};
 
     const customerId = _customerId || userId;
@@ -101,44 +114,205 @@ app.post("/orders/place", async (req, res) => {
         ...item,
         name: getItemName(item),
         quantity,
-        unitAmount: unitAmountMinor  // ✅ key must be unitAmount for payment service
+        unitAmount: unitAmountMinor,
       };
     });
 
-    // ✅ Generate orderId HERE — passed to payment metadata so consumer can use same ID
+    // orderId generated here — flows into Stripe metadata → consumer → order service
     const orderId = generateOrderId();
 
     const paymentItems = normalizedItems.map((item) => ({
       name: item.name,
       unitAmount: item.unitAmount,
-      quantity: item.quantity
+      quantity: item.quantity,
     }));
 
-    // ✅ Only call payment service — order is created by inventory consumer after stock check
+    // Step 10 — call Payment Service to create Stripe session
     const paymentResponse = await fetchJson(
       `${PAYMENT_SERVICE_URL}/payments/checkout-session`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          orderId,       // ← passed into Stripe metadata
+          orderId,
           userId: customerId,
           items: paymentItems,
           currency,
           successUrl,
-          cancelUrl
-        })
+          cancelUrl,
+        }),
       }
     );
 
+    console.log(`[place-order] ✅ Checkout session created for order ${orderId}`);
+
     res.status(201).json({
       success: true,
-      orderId,                        // ← frontend can store this to poll order status later
-      payment: paymentResponse
+      orderId,
+      payment: paymentResponse,
     });
+  } catch (error) {
+    console.error("[place-order] ❌ /orders/place error:", error.message);
+    res.status(error.status || 500).json({ error: error.message || "Failed to place order" });
+  }
+});
+
+// Step 7 — Inventory consumer calls this after stock validation
+app.post("/orders/inventory-result", async (req, res) => {
+  const {
+    orderId,
+    paymentId,
+    userId,
+    currency,
+    status,           // "ok" | "partial" | "failed"
+    confirmedItems,
+    insufficientItems,
+    refundAmount,
+    amountTotal,
+  } = req.body || {};
+
+  console.log(`[place-order] 📦 Inventory result received for order ${orderId} — status: ${status}`);
+  console.log(`[place-order] Payload:`, JSON.stringify(req.body, null, 2));
+
+  if (!orderId || !paymentId || !userId || !status) {
+    return res.status(400).json({ error: "orderId, paymentId, userId, and status are required" });
+  }
+
+  try {
+
+    // ── HAPPY PATH — all items available ─────────────────────────────────────
+    if (status === "ok") {
+      const totalPrice = (confirmedItems || []).reduce(
+        (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
+      );
+
+      // Step 7a — Create order
+      console.log(`[place-order] Creating confirmed order ${orderId}`);
+      const orderRes = await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId,
+          customerId: userId,
+          items: confirmedItems,
+          totalPrice: Number(totalPrice.toFixed(2)),
+          currency: currency || "sgd",
+          status: "confirmed",
+        }),
+      });
+      console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
+
+      // Step 9 — Log payment details to Payment Service
+      try {
+        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/log`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            orderId,
+            paymentId,
+            amount: amountTotal,
+            status: "completed",
+          }),
+        });
+        console.log(`[place-order] ✅ Payment logged for order ${orderId}`);
+      } catch (err) {
+        console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, err.message);
+      }
+
+      // Step 11 — Fire-and-forget notification
+      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+        userId,
+        type: "ORDER_CONFIRMED",
+        orderId,
+      });
+      console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId}`);
+
+      return res.json({ success: true, orderId, status: "confirmed" });
+    }
+
+    // ── PARTIAL STOCK FAILURE ─────────────────────────────────────────────────
+    if (status === "partial") {
+      const partialTotal = (confirmedItems || []).reduce(
+        (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
+      );
+
+      // Create order for confirmed items only
+      console.log(`[place-order] Creating partial order ${orderId}`);
+      await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId,
+          customerId: userId,
+          items: confirmedItems,
+          totalPrice: Number(partialTotal.toFixed(2)),
+          currency: currency || "sgd",
+          status: "confirmed",
+          notes: `Partial order — out of stock: ${(insufficientItems || []).map(i => i.name).join(", ")}`,
+        }),
+      });
+      console.log(`[place-order] ✅ Partial order created`);
+
+      // Trigger refund for out-of-stock items
+      try {
+        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${paymentId}/refund`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: refundAmount,
+            reason: `inventory_conflict: ${(insufficientItems || []).map(i => i.name).join(", ")} out of stock`,
+          }),
+        });
+        console.log(`[place-order] ✅ Partial refund triggered — amount: ${refundAmount}`);
+      } catch (err) {
+        console.warn(`[place-order] ⚠️ Partial refund failed:`, err.message);
+      }
+
+      // Fire-and-forget notification
+      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+        userId,
+        type: "ORDER_PARTIAL",
+        orderId,
+        insufficientItems,
+      });
+
+      return res.json({ success: true, orderId, status: "partial" });
+    }
+
+    // ── FULL STOCK FAILURE ────────────────────────────────────────────────────
+    if (status === "failed") {
+      console.log(`[place-order] ❌ All items out of stock — full refund for order ${orderId}`);
+
+      try {
+        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${paymentId}/refund`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: amountTotal,
+            reason: "inventory_conflict: all items out of stock",
+          }),
+        });
+        console.log(`[place-order] ✅ Full refund triggered — amount: ${amountTotal}`);
+      } catch (err) {
+        console.warn(`[place-order] ⚠️ Full refund failed:`, err.message);
+      }
+
+      // Fire-and-forget notification
+      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+        userId,
+        type: "ORDER_REFUNDED",
+        orderId,
+      });
+
+      return res.json({ success: true, orderId, status: "refunded" });
+    }
+
+    // Unknown status
+    return res.status(400).json({ error: `Unknown status: ${status}` });
 
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || "Failed to place order" });
+    console.error("[place-order] ❌ /orders/inventory-result error:", error.message);
+    res.status(500).json({ error: error.message || "Orchestration failed" });
   }
 });
 

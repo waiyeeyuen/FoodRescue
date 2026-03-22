@@ -7,6 +7,7 @@ const app = express();
 
 app.use(cors());
 
+// ✅ Webhook route MUST be before express.json() — raw body needed for signature verification
 app.post(
   "/payments/webhook",
   express.raw({ type: "application/json" }),

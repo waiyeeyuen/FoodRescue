@@ -1,11 +1,16 @@
 // index.js
 import express from 'express';
-import { connectRabbitMQ, getChannel } from './rabbitmq.js';
-import { handleEvent } from './handler.js';
+import { connectRabbitMQ } from './rabbitmq.js';
+import { handleEvent, getTitle, getMessage, getChannel } from './handler.js';
 import { sendNotification } from './sender.js';
-import { db } from '../firebase/firebaseAdmin.js';
+import { db, FieldValue } from '../firebase/firebaseAdmin.js';
 import dotenv from 'dotenv';
-dotenv.config();
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, './.env') });
 
 const app = express();
 app.use(express.json());
@@ -18,10 +23,8 @@ async function startConsumer() {
     channel.consume(queue, async (msg) => {
       const data = await handleEvent(msg);
       
-      // Send notification
       const status = await sendNotification(data);
        
-      // Update Firebase
       await db.collection('notifications')
         .doc(data.docId)
         .update({ status });
@@ -40,6 +43,64 @@ app.get('/notifications/:user_id', async (req, res) => {
     .get();
     
   res.json(snapshot.docs.map(doc => doc.data()));
+});
+
+// Step 11 — called by Place Order (fire-and-forget)
+app.post('/notifications/send', async (req, res) => {
+  const { userId, type, orderId, insufficientItems, userPhone, phone } = req.body || {};
+
+  try {
+    const userDoc = await db.collection('users').doc(userId).get();
+    const resolvedPhone =
+      userPhone ||
+      phone ||
+      userDoc.data()?.phone ||
+      process.env.DEFAULT_SMS_TO ||
+      '';
+
+    console.log('[notifications/send] Incoming:', JSON.stringify({
+      userId,
+      type,
+      orderId,
+      hasPhone: Boolean(resolvedPhone),
+      hasInsufficientItems: Array.isArray(insufficientItems) && insufficientItems.length > 0
+    }));
+
+    if (!resolvedPhone && String(type || '').toUpperCase() !== 'PUSH') {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing destination phone (provide phone/userPhone, set DEFAULT_SMS_TO, or store users/{userId}.phone)'
+      });
+    }
+
+    const normalizedType = (type || '').toUpperCase();
+
+    const notificationData = {
+      userId,
+      type: normalizedType,
+      title: getTitle(normalizedType),
+      message: getMessage(normalizedType),
+      channel: getChannel(normalizedType),
+      userPhone: resolvedPhone,
+      status: 'PENDING',
+      read: false,
+    };
+
+    const docRef = await db.collection('notifications').add({
+      ...notificationData,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    const status = await sendNotification(notificationData);
+    console.log('[notifications/send] Delivery status:', status);
+
+    await db.collection('notifications').doc(docRef.id).update({ status });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[notifications/send] ❌ Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3006;

@@ -32,10 +32,70 @@ function getProcessedSessionKey(sessionId) {
 async function readErrorMessage(response, fallbackMessage) {
   try {
     const data = await response.json();
+    if (data?.error && Array.isArray(data.details) && data.details.length > 0) {
+      return `${data.error}: ${data.details.join(', ')}`;
+    }
     return data?.error || fallbackMessage;
   } catch {
     return fallbackMessage;
   }
+}
+
+function getField(obj, ...keys) {
+  for (const key of keys) {
+    if (obj && obj[key] !== undefined && obj[key] !== null) return obj[key];
+  }
+  return undefined;
+}
+
+function toMajorUnits(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  // Heuristic: treat large integers as minor units (cents).
+  if (Number.isInteger(num) && num > 100) return num / 100;
+  return num;
+}
+
+function normalizeOrderItems(rawItems) {
+  const items = Array.isArray(rawItems) ? rawItems : [];
+
+  const normalized = items
+    .map((entry) => {
+      const wrappedItem =
+        entry?.item && typeof entry.item === 'object' ? entry.item : entry;
+
+      const quantity = Number(getField(entry, 'quantity', 'Quantity') ?? 0);
+      const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
+
+      const id =
+        getField(entry, 'listingId', 'ListingId', 'id', 'Id') ??
+        getField(wrappedItem, 'listingId', 'ListingId', 'id', 'Id');
+
+      const name =
+        getField(entry, 'itemName', 'ItemName') ||
+        getField(wrappedItem, 'itemName', 'ItemName', 'name', 'Name') ||
+        'Item';
+
+      const priceRaw =
+        getField(entry, 'price', 'Price') ?? getField(wrappedItem, 'price', 'Price') ?? 0;
+
+      return {
+        id: id != null ? String(id) : undefined,
+        name: String(name || 'Item'),
+        quantity: safeQuantity,
+        unitPrice: toMajorUnits(priceRaw),
+        raw: entry
+      };
+    })
+    .filter((i) => i.quantity > 0);
+
+  const totalPrice = Number(
+    normalized
+      .reduce((sum, item) => sum + (Number(item.unitPrice) || 0) * item.quantity, 0)
+      .toFixed(2)
+  );
+
+  return { normalized, totalPrice };
 }
 
 export default function PaymentSuccessPage() {
@@ -55,6 +115,9 @@ export default function PaymentSuccessPage() {
   async function sendOrderToBackend({ userId, items, orderId, pickupTime }) {
     if (!userId || !Array.isArray(items) || items.length === 0) return;
 
+    const { normalized, totalPrice } = normalizeOrderItems(items);
+    if (normalized.length === 0) return;
+
     const response = await fetch(`${orderServiceUrl}/orders`, {
       method: 'POST',
       headers: {
@@ -63,8 +126,16 @@ export default function PaymentSuccessPage() {
       body: JSON.stringify({
         customerId: userId,
         orderId,
-        pickupTime,
-        items,
+        // Order service requires `totalPrice`; pickupTime is not part of its schema.
+        totalPrice,
+        items: normalized.map((i) => ({
+          id: i.id,
+          name: i.name,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice
+        })),
+        notes: pickupTime ? `Pickup: ${pickupTime}` : '',
+        status: 'confirmed',
       }),
     });
 

@@ -12,6 +12,20 @@ function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
 }
 
+async function retryGetPayment(paymentId, retries = 5, delayMs = 1000) {
+  for (let i = 0; i < retries; i++) {
+    const record = await getPaymentByIdFromDb(paymentId);
+    if (record) {
+      console.log(`[Webhook] Payment record found on attempt ${i + 1}`);
+      return record;
+    }
+    console.log(`[Webhook] Payment record not found, retrying in ${delayMs}ms... (attempt ${i + 1}/${retries})`);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  console.log(`[Webhook] ❌ Payment record still not found after ${retries} retries`);
+  return null;
+}
+
 export function healthCheck(req, res) {
   res.json({ status: "ok", service: "payment" });
 }
@@ -140,6 +154,29 @@ export async function refundPayment(req, res) {
   }
 }
 
+export async function logPayment(req, res) {
+  try {
+    const { orderId, paymentId, amount, status } = req.body;
+
+    if (!orderId || !paymentId) {
+      return res.status(400).json({ error: "orderId and paymentId are required" });
+    }
+
+    await admin.firestore().collection('payments').doc(paymentId).set({
+      orderId,
+      loggedStatus: status || "completed",
+      loggedAmount: amount || 0,
+      loggedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    console.log(`[Payment] ✅ Payment logged for order ${orderId} | paymentId ${paymentId}`);
+    res.json({ success: true, orderId, paymentId });
+  } catch (error) {
+    console.error('[Payment] ❌ logPayment error:', error.message);
+    res.status(500).json({ error: "Failed to log payment" });
+  }
+}
+
 export async function handleStripeWebhook(req, res) {
   const signature = req.headers["stripe-signature"];
   let event;
@@ -175,12 +212,12 @@ export async function handleStripeWebhook(req, res) {
             stripeSessionId: session.id,
             stripePaymentIntentId: session.payment_intent || null
           });
-          console.log('[Webhook] ✅ Payment record updated to "paid"');
+          console.log('[Webhook] ✅ Payment updated to "paid"');
         } else {
           console.log('[Webhook] ❌ No paymentId in metadata — skipping payment update');
         }
 
-        const paymentRecord = paymentId ? await getPaymentByIdFromDb(paymentId) : null;
+        const paymentRecord = paymentId ? await retryGetPayment(paymentId) : null;
         console.log('[Webhook] Payment record fetched:', JSON.stringify(paymentRecord, null, 2));
 
         if (orderId && paymentRecord) {
@@ -192,9 +229,9 @@ export async function handleStripeWebhook(req, res) {
             amountTotal: paymentRecord.amountTotal,
             items: paymentRecord.items,
           };
-          console.log('[Webhook] Publishing to RabbitMQ:', JSON.stringify(queuePayload, null, 2));
+          console.log('[Webhook] Publishing to queue:', JSON.stringify(queuePayload, null, 2));
           await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
-          console.log('[Webhook] ✅ Successfully published to queue');
+          console.log('[Webhook] ✅ Published to RabbitMQ');
         } else {
           console.log('[Webhook] ❌ Skipped RabbitMQ publish');
           console.log('[Webhook]    orderId:', orderId);
