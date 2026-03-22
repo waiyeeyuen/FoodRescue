@@ -1,6 +1,9 @@
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
+import multer from 'multer'
 import {db} from '../firebase/firebaseAdmin.js'
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const app = express()
 
@@ -11,6 +14,19 @@ const corsOptions = {
 };
 app.use(cors(corsOptions))
 app.use(express.json())
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+})
+
+const s3 = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
 const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
@@ -33,6 +49,32 @@ async function readOutsystemsBody(response) {
     return raw;
   }
 }
+
+function fileToDataUri(file) {
+  return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
+}
+
+// function toCloudinaryPublicId(value) {
+//   if (!value) return ''
+//   const raw = String(value).trim()
+//   if (!raw) return ''
+
+//   // If it is already a public id-like value, keep it.
+//   if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+
+//   // Convert full Cloudinary delivery URL to public_id to keep payload short.
+//   const marker = '/image/upload/'
+//   const markerIndex = raw.indexOf(marker)
+//   if (markerIndex === -1) return raw
+
+//   let pathPart = raw.slice(markerIndex + marker.length)
+//   const queryIndex = pathPart.indexOf('?')
+//   if (queryIndex >= 0) pathPart = pathPart.slice(0, queryIndex)
+
+//   const versionMatch = pathPart.match(/^v\d+\/(.+)$/)
+//   const publicIdWithExt = versionMatch ? versionMatch[1] : pathPart
+//   return publicIdWithExt.replace(/\.[^/.]+$/, '')
+// }
 
 async function createListing(req, res) {
   try {
@@ -72,6 +114,8 @@ async function createListing(req, res) {
       return res.status(400).json({ error: 'restaurantName, itemName, expiryTime must be non-empty' });
     }
 
+    const normalizedImageRef = imageURL || ''
+
     const params = new URLSearchParams({
       restaurantId: String(restaurantId),
       restaurantName: normalizedRestaurantName,
@@ -81,7 +125,7 @@ async function createListing(req, res) {
       originalPrice: originalPrice != null && originalPrice !== '' ? String(Number(originalPrice)) : '',
       quantity: String(Number(quantity)),
       expiryTime: normalizedExpiryTime, // e.g. "2026-03-31T23:59:59.938Z"
-      imageURL: imageURL ?? '',
+      imageURL: normalizedImageRef,
       cuisineType: cuisineType ?? '',
     });
 
@@ -122,6 +166,36 @@ app.post('/inventory/listings', createListing);
 
 // Backward-compat alias
 app.post('/inventory/createListing', createListing);
+
+app.post('/inventory/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'image is required' });
+    }
+
+    const file = req.file;
+
+    const fileName = `foods/${Date.now()}-${file.originalname}`;
+
+    const command = new PutObjectCommand({
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: fileName,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    });
+
+    await s3.send(command);
+
+    const imageUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
+
+    return res.status(201).json({
+      url: imageUrl,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // Get all active listings
 app.get('/inventory/active', async (req, res) => {

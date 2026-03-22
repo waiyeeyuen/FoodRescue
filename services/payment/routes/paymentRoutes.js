@@ -5,6 +5,7 @@ import {
   getPaymentById,
   createCheckoutSession,
   refundPayment,
+  logPayment,
   handleStripeWebhook
 } from "../controllers/paymentController.js";
 
@@ -14,6 +15,7 @@ router.get("/health", healthCheck);
 router.get("/", getAllPayments);
 router.get("/:paymentId", getPaymentById);
 router.post("/checkout-session", createCheckoutSession);
+router.post("/log", logPayment);                  
 router.post("/:paymentId/refund", refundPayment);
 
 export { router as paymentRoutes, handleStripeWebhook };

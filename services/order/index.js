@@ -6,7 +6,7 @@ const app = express()
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 
@@ -15,15 +15,12 @@ app.use(express.json())
 
 const ORDERS = db.collection('orders')
 
-// Utility function to generate order ID
 function generateOrderId() {
   return 'ORD_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-// Utility function to validate order data
 function validateOrderData(data) {
   const errors = [];
-  
   if (!data.customerId) errors.push('customerId is required');
   if (!data.items || !Array.isArray(data.items) || data.items.length === 0) {
     errors.push('items array is required and must not be empty');
@@ -31,22 +28,21 @@ function validateOrderData(data) {
   if (typeof data.totalPrice !== 'number' || data.totalPrice < 0) {
     errors.push('totalPrice must be a non-negative number');
   }
-  
   return errors;
 }
 
 // CREATE ORDER
 app.post('/orders', async (req, res) => {
   try {
-    const { customerId, items, totalPrice, notes } = req.body;
-    
-    // Validate input
+    const { orderId: incomingOrderId, customerId, items, totalPrice, notes, status } = req.body;
+
     const errors = validateOrderData({ customerId, items, totalPrice });
     if (errors.length > 0) {
       return res.status(400).json({ error: 'Validation failed', details: errors });
     }
 
-    const orderId = generateOrderId();
+    // ✅ Use the orderId passed by the consumer (same as payment metadata), or generate one
+    const orderId = incomingOrderId || generateOrderId();
     const now = new Date();
 
     const orderData = {
@@ -55,6 +51,7 @@ app.post('/orders', async (req, res) => {
       items,
       totalPrice,
       notes: notes || '',
+      status: status || 'pending_payment',
       createdAt: now,
       updatedAt: now,
       events: [
@@ -79,23 +76,25 @@ app.post('/orders', async (req, res) => {
   }
 });
 
-// GET ALL ORDERS (for history and recommendations)
+// GET ALL ORDERS
 app.get('/orders', async (req, res) => {
   try {
-    const { customerId, limit = 50, offset = 0 } = req.query;
-    
+    const { customerId, status, limit = 50, offset = 0 } = req.query;
+
     let query = ORDERS;
 
-    // Filter by customerId if provided
     if (customerId) {
       query = query.where('customerId', '==', customerId);
     }
 
-    // Order by creation time (newest first)
+    if (status) {
+      query = query.where('status', '==', status);
+    }
+
     query = query.orderBy('createdAt', 'desc');
 
     const snapshot = await query.get();
-    
+
     const allOrders = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data(),
@@ -103,7 +102,6 @@ app.get('/orders', async (req, res) => {
       updatedAt: doc.data().updatedAt?.toDate?.() || doc.data().updatedAt
     }));
 
-    // Apply pagination
     const paginatedOrders = allOrders.slice(
       parseInt(offset),
       parseInt(offset) + parseInt(limit)
@@ -122,11 +120,96 @@ app.get('/orders', async (req, res) => {
   }
 });
 
+// UPDATE ORDER STATUS
+app.patch('/orders/:orderId/status', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ error: 'status is required' });
+    }
+
+    const doc = await ORDERS.doc(orderId).get();
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const now = new Date();
+    await ORDERS.doc(orderId).update({
+      status,
+      updatedAt: now,
+      events: [...(doc.data().events || []), {
+        type: 'status_updated',
+        timestamp: now,
+        details: `Status changed to ${status}`
+      }]
+    });
+
+    res.json({ success: true, orderId, status });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET ORDER HISTORY FOR RECOMMENDATIONS
+app.get('/orders/customer/:customerId/history', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { limit = 20 } = req.query;
+
+    const snapshot = await ORDERS
+      .where('customerId', '==', customerId)
+      .where('status', '==', 'confirmed')
+      .orderBy('createdAt', 'desc')
+      .limit(parseInt(limit))
+      .get();
+
+    const orderHistory = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        orderId: data.orderId,
+        items: data.items,
+        totalPrice: data.totalPrice,
+        createdAt: data.createdAt?.toDate?.() || data.createdAt
+      };
+    });
+
+    const itemFrequency = {};
+    orderHistory.forEach(order => {
+      order.items.forEach(item => {
+        const itemKey = item.id || item.name;
+        if (itemKey) {
+          itemFrequency[itemKey] = (itemFrequency[itemKey] || 0) + item.quantity;
+        }
+      });
+    });
+
+    res.json({
+      success: true,
+      customerId,
+      totalOrders: orderHistory.length,
+      orderHistory,
+      recommendations: {
+        frequentItems: Object.entries(itemFrequency)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([itemId, count]) => ({ itemId, purchaseCount: count })),
+        preferredCategories: []
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET SPECIFIC ORDER
 app.get('/orders/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-
     const doc = await ORDERS.doc(orderId).get();
 
     if (!doc.exists) {
@@ -149,72 +232,12 @@ app.get('/orders/:orderId', async (req, res) => {
   }
 });
 
-
-// GET ORDER HISTORY FOR RECOMMENDATIONS
-app.get('/orders/customer/:customerId/history', async (req, res) => {
-  try {
-    const { customerId } = req.params;
-    const { limit = 20 } = req.query;
-
-    const snapshot = await ORDERS
-      .where('customerId', '==', customerId)
-      .orderBy('createdAt', 'desc')
-      .limit(parseInt(limit))
-      .get();
-
-    const orderHistory = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        orderId: data.orderId,
-        items: data.items,
-        totalPrice: data.totalPrice,
-        createdAt: data.createdAt?.toDate?.() || data.createdAt
-      };
-    });
-
-    // Aggregate items for recommendations
-    const itemFrequency = {};
-    const categoryPreferences = {};
-
-    orderHistory.forEach(order => {
-      order.items.forEach(item => {
-        itemFrequency[item.itemId] = (itemFrequency[item.itemId] || 0) + item.quantity;
-        
-        if (item.category) {
-          categoryPreferences[item.category] = (categoryPreferences[item.category] || 0) + 1;
-        }
-      });
-    });
-
-    res.json({
-      success: true,
-      customerId,
-      totalOrders: orderHistory.length,
-      orderHistory,
-      recommendations: {
-        frequentItems: Object.entries(itemFrequency)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(([itemId, count]) => ({ itemId, purchaseCount: count })),
-        preferredCategories: Object.entries(categoryPreferences)
-          .sort((a, b) => b[1] - a[1])
-          .map(([category, count]) => ({ category, frequency: count }))
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // HEALTH CHECK
 app.get('/health', (req, res) => {
   res.json({ status: 'Order service is running' });
 });
 
 const PORT = process.env.PORT || 3004;
-
 app.listen(PORT, () => {
   console.log(`Order service running on port ${PORT}`);
 });

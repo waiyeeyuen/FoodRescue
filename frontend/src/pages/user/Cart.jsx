@@ -13,23 +13,95 @@ function formatMoney(value) {
   return `$${n.toFixed(2)}`;
 }
 
+function getField(item, ...keys) {
+  for (const key of keys) {
+    if (item && item[key] !== undefined && item[key] !== null) return item[key];
+  }
+  return undefined;
+}
+
 export default function UserCart() {
-  const { user, cart, cartCount, cartLoading, removeFromCart, clearCart } = useAuth();
-  const checkoutBaseUrl =
-    import.meta.env.VITE_CHECKOUT_SERVICE_URL || 'http://localhost:4004';
+  const {
+    user,
+    cart,
+    cartCount,
+    cartLoading,
+    removeFromCart,
+    clearCart,
+    getRemainingStockForListing,
+  } = useAuth();
+
+  const placeOrderBaseUrl =
+    import.meta.env.VITE_PLACE_ORDER_SERVICE_URL || 'http://localhost:4001';
 
   const [busyId, setBusyId] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState(null);
 
+  const normalizedCart = useMemo(() => {
+    return (cart || []).map((entry, index) => {
+      const item = entry?.item || entry;
+
+      const listingId =
+        getField(entry, 'listingId', 'ListingId') ??
+        getField(item, 'listingId', 'ListingId', 'id', 'Id');
+
+      const itemName = getField(entry, 'itemName', 'ItemName') ??
+        getField(item, 'itemName', 'ItemName', 'name', 'Name') ??
+        'Item';
+
+      const restaurantName =
+        getField(entry, 'restaurantName', 'RestaurantName') ??
+        getField(item, 'restaurantName', 'RestaurantName');
+
+      const restaurantId =
+        getField(entry, 'restaurantId', 'RestaurantId') ??
+        getField(item, 'restaurantId', 'RestaurantId');
+
+      const imageURL =
+        getField(entry, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl') ??
+        getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
+
+      const priceRaw =
+        getField(entry, 'price', 'Price') ??
+        getField(item, 'price', 'Price');
+
+      const quantityRaw = getField(entry, 'quantity', 'Quantity') ?? 0;
+      const pickupTime = getField(entry, 'pickupTime', 'PickupTime') ?? '';
+
+      const price = Number(priceRaw ?? 0);
+      const quantity = Number(quantityRaw ?? 0);
+      const lineTotal =
+        Number.isFinite(price) && Number.isFinite(quantity) ? price * quantity : 0;
+
+      const remainingOutsideCart = getRemainingStockForListing(item);
+      const availableForThisLine = remainingOutsideCart + quantity;
+      const exceedsStock = quantity > availableForThisLine;
+
+      return {
+        raw: entry,
+        item,
+        key: `${listingId ?? 'listing'}-${pickupTime || index}`,
+        listingId,
+        itemName,
+        restaurantName,
+        restaurantId,
+        imageURL,
+        price: Number.isFinite(price) ? price : 0,
+        quantity: Number.isFinite(quantity) ? quantity : 0,
+        pickupTime,
+        lineTotal,
+        availableForThisLine,
+        exceedsStock,
+      };
+    });
+  }, [cart, getRemainingStockForListing]);
+
+  const hasInvalidStock = normalizedCart.some((line) => line.exceedsStock);
+
   const total = useMemo(() => {
-    return (cart || []).reduce((sum, item) => {
-      const qty = Number(item?.quantity ?? 0);
-      const price = Number(item?.price ?? 0);
-      if (!Number.isFinite(qty) || !Number.isFinite(price)) return sum;
-      return sum + qty * price;
-    }, 0);
-  }, [cart]);
+    return normalizedCart.reduce((sum, item) => sum + item.lineTotal, 0);
+  }, [normalizedCart]);
 
   const onRemove = async (listingId) => {
     setCheckoutError(null);
@@ -45,16 +117,41 @@ export default function UserCart() {
 
   const onCheckout = async () => {
     if (!user?.id) return;
+
+    if (!normalizedCart.length) {
+      setCheckoutError('Your cart is empty');
+      return;
+    }
+
+    if (hasInvalidStock) {
+      setCheckoutError('Some items in your cart exceed available stock. Please remove them before checkout.');
+      return;
+    }
+
     setCheckoutError(null);
+
     try {
       setCheckoutLoading(true);
-      const items = (cart || []).map((c) => ({
+
+      const pendingOrderId = `ORD-${Date.now()}`;
+
+      sessionStorage.setItem(
+        'pending_checkout',
+        JSON.stringify({
+          orderId: pendingOrderId,
+          items: cart,
+          pickupTime: '',
+        })
+      );
+
+      const cartPayload = normalizedCart.map((c) => ({
         name: c.itemName || 'Item',
+        itemId: c.listingId,
         quantity: Number(c.quantity ?? 1),
-        price: Number(c.price ?? 0),
+        unitAmount: Number(c.price ?? 0),
       }));
 
-      const notesLines = (cart || [])
+      const notesLines = normalizedCart
         .map((c) => {
           const pickup = c.pickupTime ? `Pickup: ${c.pickupTime}` : 'Pickup: —';
           const restaurant = c.restaurantName ? `@ ${c.restaurantName}` : '';
@@ -62,23 +159,31 @@ export default function UserCart() {
         })
         .join('\n');
 
-      const res = await fetch(`${checkoutBaseUrl}/checkout`, {
+      const res = await fetch(`${placeOrderBaseUrl}/orders/place`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
-          items,
+          cart: cartPayload,
+          currency: 'sgd',
           notes: `Cart checkout\n${notesLines}`,
-          applyVoucher: false,
+          successUrl: `${window.location.origin}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+          cancelUrl: `${window.location.origin}/cart`,
         }),
       });
+
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Checkout failed');
+      if (!res.ok) {
+        sessionStorage.removeItem('pending_checkout');
+        throw new Error(data?.error || 'Checkout failed');
+      }
 
       const checkoutUrl = data?.payment?.checkoutUrl;
-      if (!checkoutUrl) throw new Error('Missing checkoutUrl from payment service');
+      if (!checkoutUrl) {
+        sessionStorage.removeItem('pending_checkout');
+        throw new Error('Missing checkoutUrl from payment service');
+      }
 
-      await clearCart();
       window.location.href = checkoutUrl;
     } catch (e) {
       setCheckoutError(e?.message || 'Checkout failed');
@@ -138,15 +243,12 @@ export default function UserCart() {
               <CardDescription>Review your selections before checkout.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
-              {(cart || []).map((c) => {
-                const qty = Number(c.quantity ?? 0);
-                const price = Number(c.price ?? 0);
-                const lineTotal = Number.isFinite(qty) && Number.isFinite(price) ? qty * price : 0;
-                return (
-                  <div
-                    key={c.listingId}
-                    className="flex items-center gap-3 rounded-2xl border border-input bg-background px-3 py-3"
-                  >
+              {normalizedCart.map((c) => (
+                <div
+                  key={c.key}
+                  className="rounded-2xl border border-input bg-background px-3 py-3"
+                >
+                  <div className="flex items-center gap-3">
                     <div className="size-12 overflow-hidden rounded-xl bg-muted ring-1 ring-border shrink-0">
                       {c.imageURL ? (
                         <img
@@ -157,6 +259,7 @@ export default function UserCart() {
                         />
                       ) : null}
                     </div>
+
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-foreground">
                         {c.itemName || 'Item'}
@@ -166,10 +269,13 @@ export default function UserCart() {
                         {c.pickupTime ? ` • Pickup ${c.pickupTime}` : ''}
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {qty} × {formatMoney(price)} ={' '}
-                        <span className="font-semibold text-foreground">{formatMoney(lineTotal)}</span>
+                        {c.quantity} × {formatMoney(c.price)} ={' '}
+                        <span className="font-semibold text-foreground">
+                          {formatMoney(c.lineTotal)}
+                        </span>
                       </p>
                     </div>
+
                     <Button
                       type="button"
                       variant="ghost"
@@ -181,8 +287,14 @@ export default function UserCart() {
                       <Trash2Icon className="size-4" />
                     </Button>
                   </div>
-                );
-              })}
+
+                  {c.exceedsStock && (
+                    <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-red-200">
+                      This cart line exceeds available stock. Available now: {c.availableForThisLine}.
+                    </div>
+                  )}
+                </div>
+              ))}
             </CardContent>
           </Card>
 
@@ -206,7 +318,7 @@ export default function UserCart() {
                 type="button"
                 className="w-full rounded-2xl h-11"
                 onClick={onCheckout}
-                disabled={checkoutLoading}
+                disabled={checkoutLoading || hasInvalidStock}
               >
                 {checkoutLoading ? 'Proceeding...' : 'Proceed to checkout'}
               </Button>
@@ -226,4 +338,3 @@ export default function UserCart() {
     </div>
   );
 }
-

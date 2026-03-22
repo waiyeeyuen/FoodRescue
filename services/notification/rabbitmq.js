@@ -5,15 +5,13 @@ let connection;
 export const pool = [];
 
 export async function connectRabbitMQ() {
-  connection = await amqp.connect('amqp://localhost:5672');
+  connection = await amqp.connect(process.env.RABBITMQ_URL || 'amqp://localhost:5672');
   const channel = await connection.createChannel();
   
-  // Create connection pool
   for (let i = 0; i < 5; i++) {
     pool.push(await connection.createChannel());
   }
   
-  // Setup queues
   const queues = ['order.expired', 'listing.expired', 'reward.triggered'];
   for (const queue of queues) {
     await channel.assertQueue(queue, { durable: true });
