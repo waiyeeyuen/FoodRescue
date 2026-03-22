@@ -10,6 +10,7 @@
     "consumer:dev": "nodemon consumer.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1014.0",
     "amqplib": "^0.10.9",
     "cloudinary": "^2.8.0",
     "cors": "^2.8.6",
@@ -18,5 +19,4 @@
     "firebase-admin": "^13.7.0",
     "multer": "^2.0.2"
   }
-
 }
