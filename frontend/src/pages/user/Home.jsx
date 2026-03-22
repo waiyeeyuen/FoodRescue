@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronLeftIcon,
   HeartIcon,
   MinusIcon,
   PlusIcon,
@@ -11,8 +10,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/context/AuthContext';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -57,51 +56,6 @@ function getRawQuantity(item) {
   return Number.isFinite(value) ? value : 0;
 }
 
-function extractRecommendationMeta(recData) {
-  const recommendedIds = [];
-  const reasonsById = new Map();
-
-  const recommendedListings = Array.isArray(recData?.recommendedListings)
-    ? recData.recommendedListings
-    : [];
-
-  const recommendedListingIds = Array.isArray(recData?.recommendedListingIds)
-    ? recData.recommendedListingIds
-    : [];
-
-  for (const rawId of recommendedListingIds) {
-    if (rawId === undefined || rawId === null) continue;
-    recommendedIds.push(String(rawId));
-  }
-
-  for (const item of recommendedListings) {
-    const id = getListingId(item);
-    if (!id) continue;
-
-    recommendedIds.push(id);
-
-    if (item?.aiReason) {
-      reasonsById.set(id, item.aiReason);
-    }
-  }
-
-  const dedupedOrderedIds = [];
-  const seen = new Set();
-
-  for (const id of recommendedIds) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    dedupedOrderedIds.push(id);
-
-    if (dedupedOrderedIds.length >= MAX_RECOMMENDATIONS) break;
-  }
-
-  return {
-    recommendedIds: dedupedOrderedIds,
-    reasonsById,
-  };
-}
-
 function ListingCard({
   item,
   aiRecommended = false,
@@ -114,17 +68,14 @@ function ListingCard({
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
   const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
-  const restaurantId = getField(item, 'restaurantId', 'RestaurantId');
 
   const remainingQuantity = Number(item?.remainingQuantity ?? getRawQuantity(item));
-
   const price = Number(getField(item, 'price', 'Price') ?? 0);
   const originalPrice = Number(getField(item, 'originalPrice', 'OriginalPrice') ?? 0);
   const discount = originalPrice > 0 ? Math.round((1 - price / originalPrice) * 100) : 0;
 
   const expiryTimeRaw = getField(item, 'expiryTime', 'ExpiryTime');
   const expiryDate = expiryTimeRaw ? new Date(expiryTimeRaw) : null;
-
   const isExpiringSoon =
     expiryDate && !Number.isNaN(expiryDate.getTime())
       ? expiryDate.getTime() - Date.now() < 24 * 60 * 60 * 1000
@@ -196,9 +147,7 @@ function ListingCard({
           )}
         </div>
 
-        {description && (
-          <p className="line-clamp-2 text-sm text-muted-foreground">{description}</p>
-        )}
+        {description && <p className="line-clamp-2 text-sm text-muted-foreground">{description}</p>}
 
         <div className="mt-auto flex items-center gap-2 pt-2">
           <span className="text-lg font-bold">
@@ -222,9 +171,7 @@ function ListingCard({
           )}
         </div>
 
-        {(restaurantName || restaurantId) && (
-          <p className="truncate text-xs text-muted-foreground">{restaurantName ?? restaurantId}</p>
-        )}
+        {restaurantName && <p className="truncate text-xs text-muted-foreground">{restaurantName}</p>}
       </div>
     </div>
   );
@@ -247,8 +194,11 @@ export default function UserHome() {
     getCartQuantityForListing,
   } = useAuth();
 
+  const inputRef = useRef(null);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [activeListings, setActiveListings] = useState([]);
+  const [recommendedListings, setRecommendedListings] = useState([]);
   const [geminiReasoning, setGeminiReasoning] = useState('');
   const [geminiUsed, setGeminiUsed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -264,7 +214,7 @@ export default function UserHome() {
   useEffect(() => {
     const controller = new AbortController();
 
-    const loadListings = async () => {
+    async function loadListings() {
       try {
         setLoading(true);
         setError(null);
@@ -283,10 +233,13 @@ export default function UserHome() {
         }
 
         const inventoryData = await inventoryRes.json();
-        const inventoryListings = Array.isArray(inventoryData) ? inventoryData : [];
+        const inventoryListings = Array.isArray(inventoryData?.data)
+          ? inventoryData.data
+          : Array.isArray(inventoryData)
+            ? inventoryData
+            : [];
 
-        let recommendedIds = [];
-        let reasonsById = new Map();
+        setActiveListings(inventoryListings);
 
         if (user?.id) {
           try {
@@ -295,83 +248,91 @@ export default function UserHome() {
               { signal: controller.signal }
             );
 
-            if (recRes.ok) {
-              const recData = await recRes.json();
-
-              const extracted = extractRecommendationMeta(recData);
-              recommendedIds = extracted.recommendedIds;
-              reasonsById = extracted.reasonsById;
-
-              setGeminiUsed(recData?.gemini?.used ?? false);
-              setGeminiReasoning(recData?.gemini?.reasoning ?? '');
-            } else {
-              setGeminiUsed(false);
-              setGeminiReasoning('');
+            if (!recRes.ok) {
+              throw new Error('Failed to load recommendations');
             }
-          } catch (e) {
-            console.warn('Recommendations failed, using inventory only:', e);
+
+            const recData = await recRes.json();
+
+            const recommended = Array.isArray(recData?.recommendedListings)
+              ? recData.recommendedListings
+              : [];
+
+            const fallback = Array.isArray(recData?.fallbackListings)
+              ? recData.fallbackListings
+              : [];
+
+            const merged = [...recommended, ...fallback];
+            const seen = new Set();
+            const deduped = [];
+
+            for (const item of merged) {
+              const id = getListingId(item);
+              if (!id || seen.has(id)) continue;
+              seen.add(id);
+              deduped.push(item);
+            }
+
+            setRecommendedListings(deduped);
+            setGeminiUsed(Boolean(recData?.gemini?.used));
+            setGeminiReasoning(recData?.gemini?.reasoning || '');
+          } catch (err) {
+            console.error('Failed to load recommendations:', err);
+            setRecommendedListings([]);
             setGeminiUsed(false);
             setGeminiReasoning('');
           }
         } else {
+          setRecommendedListings([]);
           setGeminiUsed(false);
           setGeminiReasoning('');
         }
-
-        const inventoryById = new Map();
-        for (const item of inventoryListings) {
-          const id = getListingId(item);
-          if (id) inventoryById.set(id, item);
-        }
-
-        const recommendedIdSet = new Set(
-          recommendedIds.filter((id) => inventoryById.has(id))
-        );
-
-        const merged = inventoryListings.map((item) => {
-          const id = getListingId(item);
-          const baseQty = getRawQuantity(item);
-
-          return {
-            ...item,
-            quantity: baseQty,
-            __baseStock: baseQty,
-            aiRecommended: !!(id && recommendedIdSet.has(id)),
-            aiReason: id ? reasonsById.get(id) ?? null : null,
-          };
-        });
-
-        setActiveListings(merged);
       } catch (e) {
         if (e?.name === 'AbortError') return;
-        setError(e?.message || 'Failed to load active listings');
+        setError(e?.message || 'Failed to load homepage');
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
-    };
+    }
 
     loadListings();
-    return () => controller.abort();
+
+    const handleFocus = () => loadListings();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') loadListings();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [inventoryServiceUrl, recommendationServiceUrl, user?.id]);
 
   const stockAdjustedListings = useMemo(() => {
     return activeListings
-      .map((item) => {
-        const helperRemaining = getRemainingStockForListing(item);
-        const rawQuantity = getRawQuantity(item);
-
-        const remaining =
-          Number.isFinite(helperRemaining) && helperRemaining >= 0
-            ? helperRemaining
-            : rawQuantity;
-
-        return {
-          ...item,
-          remainingQuantity: remaining,
-        };
-      })
+      .map((item) => ({
+        ...item,
+        remainingQuantity: Math.max(0, getRemainingStockForListing(item)),
+      }))
       .filter((item) => Number(item?.remainingQuantity ?? 0) > 0);
   }, [activeListings, getRemainingStockForListing]);
+
+  const stockAdjustedRecommendedListings = useMemo(() => {
+    return recommendedListings
+      .map((item, index) => ({
+        ...item,
+        aiRecommended: true,
+        aiReason: item?.aiReason ?? item?.reason ?? null,
+        remainingQuantity: Math.max(0, getRemainingStockForListing(item)),
+        __recommendedIndex: index,
+      }))
+      .filter((item) => Number(item?.remainingQuantity ?? 0) > 0)
+      .slice(0, MAX_RECOMMENDATIONS);
+  }, [recommendedListings, getRemainingStockForListing]);
 
   const visibleListings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -392,14 +353,28 @@ export default function UserHome() {
     });
   }, [stockAdjustedListings, searchQuery]);
 
-  const recommendedListings = useMemo(() => {
-    const recs = visibleListings.filter((item) => item?.aiRecommended);
-    return recs.slice(0, MAX_RECOMMENDATIONS);
-  }, [visibleListings]);
+  const visibleRecommendedListings = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return stockAdjustedRecommendedListings;
+
+    return stockAdjustedRecommendedListings.filter((item) => {
+      const haystack = [
+        getField(item, 'itemName', 'ItemName', 'name', 'Name'),
+        getField(item, 'restaurantName', 'RestaurantName'),
+        getField(item, 'cuisineType', 'CuisineType'),
+        getField(item, 'description', 'Description'),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(q);
+    });
+  }, [stockAdjustedRecommendedListings, searchQuery]);
 
   const recommendedIdSet = useMemo(
-    () => new Set(recommendedListings.map((item) => getListingId(item)).filter(Boolean)),
-    [recommendedListings]
+    () => new Set(visibleRecommendedListings.map((item) => getListingId(item)).filter(Boolean)),
+    [visibleRecommendedListings]
   );
 
   const regularListings = useMemo(
@@ -429,7 +404,6 @@ export default function UserHome() {
     const cuisineType = getField(selectedItem, 'cuisineType', 'CuisineType');
     const imageURL = getField(selectedItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
     const restaurantName = getField(selectedItem, 'restaurantName', 'RestaurantName');
-    const restaurantId = getField(selectedItem, 'restaurantId', 'RestaurantId');
     const price = Number(getField(selectedItem, 'price', 'Price') ?? 0);
     const originalPrice = Number(getField(selectedItem, 'originalPrice', 'OriginalPrice') ?? 0);
     const discount = originalPrice > 0 ? Math.round((1 - price / originalPrice) * 100) : 0;
@@ -442,7 +416,6 @@ export default function UserHome() {
       cuisineType,
       imageURL,
       restaurantName,
-      restaurantId,
       quantity: Math.max(0, remainingQuantity),
       alreadyInCart,
       price: Number.isFinite(price) ? price : 0,
@@ -450,7 +423,7 @@ export default function UserHome() {
       discount,
       expiryDate: expiryDate && !Number.isNaN(expiryDate.getTime()) ? expiryDate : null,
       aiRecommended: selectedItem?.aiRecommended ?? false,
-      aiReason: selectedItem?.aiReason ?? null,
+      aiReason: selectedItem?.aiReason ?? selectedItem?.reason ?? null,
     };
   }, [selectedItem, getRemainingStockForListing, getCartQuantityForListing]);
 
@@ -484,14 +457,7 @@ export default function UserHome() {
     }
 
     try {
-      const payloadItem = {
-        ...selectedItem,
-        quantity: getRawQuantity(selectedItem),
-        __baseStock: getRawQuantity(selectedItem),
-      };
-
-      await addToCart({ item: payloadItem, quantity: orderQty, pickupTime });
-
+      await addToCart({ item: selectedItem, quantity: orderQty, pickupTime });
       setDetailsOpen(false);
       setAddConfirmMessage(`${orderQty} × ${selected.itemName} added to cart`);
       setAddConfirmOpen(true);
@@ -508,32 +474,38 @@ export default function UserHome() {
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="relative max-w-xl">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative max-w-xl overflow-hidden rounded-xl">
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
+
           <input
+            ref={inputRef}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by item, restaurant, cuisine..."
             className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
           />
-          {searchQuery.trim() && (
-            <Button
+
+          {searchQuery.trim() !== '' && (
+            <button
               type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="absolute right-2 top-1/2 -translate-y-1/2"
-              onClick={() => setSearchQuery('')}
+              onClick={() => {
+                setSearchQuery('');
+                requestAnimationFrame(() => {
+                  inputRef.current?.focus();
+                });
+              }}
+              className="absolute right-2 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               aria-label="Clear search"
             >
-              <XIcon />
-            </Button>
+              <XIcon className="h-4 w-4" />
+            </button>
           )}
         </div>
 
-        {!loading && !error && recommendedListings.length > 0 && (
+        {!loading && !error && visibleRecommendedListings.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            Showing {recommendedListings.length} recommended listing
-            {recommendedListings.length > 1 ? 's' : ''}
+            Showing {visibleRecommendedListings.length} recommended listing
+            {visibleRecommendedListings.length > 1 ? 's' : ''}
           </p>
         )}
 
@@ -557,7 +529,7 @@ export default function UserHome() {
         <p className="text-sm text-muted-foreground">No matches for your search.</p>
       ) : (
         <div className="flex flex-col gap-8">
-          {recommendedListings.length > 0 && (
+          {visibleRecommendedListings.length > 0 && (
             <section className="flex flex-col gap-3">
               <div>
                 <h2 className="flex items-center gap-2 text-xl font-semibold text-slate-900">
@@ -565,13 +537,13 @@ export default function UserHome() {
                   Recommended for you
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Personalized picks based on your preferences
+                  Personalized picks powered by Gemini
                 </p>
               </div>
 
               <div className="overflow-x-auto pb-2">
                 <div className="flex min-w-max gap-4">
-                  {recommendedListings.map((item, idx) => {
+                  {visibleRecommendedListings.map((item, idx) => {
                     const key = getListingId(item) ?? `rec-${idx}`;
                     return (
                       <button
@@ -619,6 +591,8 @@ export default function UserHome() {
                       <div className="group">
                         <ListingCard
                           item={item}
+                          aiRecommended={Boolean(item?.aiRecommended)}
+                          aiReason={item?.aiReason ?? null}
                           isFavorited={isFavorite(item)}
                           onToggleFavorite={toggleFavorite}
                         />
@@ -633,192 +607,121 @@ export default function UserHome() {
       )}
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="overflow-hidden rounded-3xl p-0 sm:max-w-[420px]">
-          {selected ? (
-            <div className="bg-background">
-              <div className="flex items-center justify-between px-4 pt-4">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setDetailsOpen(false)}
-                  aria-label="Back"
-                >
-                  <ChevronLeftIcon className="size-4" />
-                </Button>
-
-                <p className="flex-1 truncate px-2 text-center text-sm font-semibold text-foreground">
-                  {selected.restaurantName ?? selected.restaurantId ?? 'Restaurant'}
-                </p>
-
-                <div className="w-8" />
+        <DialogContent className="max-w-md overflow-hidden rounded-3xl p-0">
+          {selected && selectedItem && (
+            <div className="flex flex-col">
+              <div className="relative">
+                <img
+                  src={selected.imageURL || '/logo.png'}
+                  alt={selected.itemName}
+                  className={`h-44 w-full ${selected.imageURL ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
+                />
               </div>
 
-              <div className="px-6 pt-4">
-                <div className="relative mx-auto flex size-44 items-center justify-center overflow-hidden rounded-3xl bg-muted/40 ring-1 ring-border sm:size-52">
-                  <img
-                    src={selected.imageURL || '/logo.png'}
-                    alt={selected.itemName}
-                    className={
-                      selected.imageURL
-                        ? 'h-full w-full object-cover'
-                        : 'h-full w-full object-contain p-8'
-                    }
-                    loading="lazy"
-                  />
-                </div>
-              </div>
+              <div className="flex flex-col gap-4 p-5">
+                <DialogHeader className="space-y-2 text-left">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <DialogTitle className="text-xl font-semibold leading-tight">
+                        {selected.itemName}
+                      </DialogTitle>
+                      <DialogDescription className="mt-1 text-sm text-muted-foreground">
+                        {selected.restaurantName || 'Fresh surplus food'}
+                      </DialogDescription>
+                    </div>
 
-              <div className="px-6 pt-4">
-                <div className="flex items-start justify-between gap-3">
-                  <h2 className="text-xl font-semibold leading-tight">{selected.itemName}</h2>
-                  {selected.cuisineType && (
-                    <span className="mt-0.5 inline-flex items-center whitespace-nowrap rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-                      {selected.cuisineType}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="px-6 pt-4">
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {selected.description || 'No description provided.'}
-                </p>
-              </div>
-
-              <div className="px-6 pt-4">
-                <div className="grid grid-cols-3 gap-3 text-center">
-                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
-                    <p className="text-sm font-semibold text-foreground">${selected.price.toFixed(2)}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">Price</p>
-                  </div>
-                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
-                    <p className="text-sm font-semibold text-foreground">{selected.quantity}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">Available</p>
-                  </div>
-                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
-                    {selected.expiryDate ? (
-                      <>
-                        <p className="text-sm font-semibold text-foreground">
-                          {selected.expiryDate.toLocaleDateString()}
-                        </p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {selected.expiryDate.toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-sm font-semibold text-foreground">—</p>
+                    {selected.aiRecommended && (
+                      <Badge className="rounded-full bg-violet-600 text-white hover:bg-violet-700">
+                        <SparklesIcon className="mr-1 size-3" /> AI Pick
+                      </Badge>
                     )}
-                    <p className="mt-1 text-[11px] text-muted-foreground">Expiry</p>
+                  </div>
+                </DialogHeader>
+
+                {selected.description && (
+                  <p className="text-sm leading-5 text-muted-foreground line-clamp-3">
+                    {selected.description}
+                  </p>
+                )}
+
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Price</p>
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="text-lg font-bold">${selected.price.toFixed(2)}</span>
+                      {selected.discount > 0 && selected.originalPrice !== null && (
+                        <span className="text-xs text-muted-foreground line-through">
+                          ${selected.originalPrice.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                      Available now
+                    </p>
+                    <p className="mt-1 text-lg font-bold">{selected.quantity}</p>
+                    {selected.alreadyInCart > 0 && (
+                      <p className="mt-1 text-xs text-amber-600">
+                        {selected.alreadyInCart} already in cart
+                      </p>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              <div className="px-6 pt-4">
-                <p className="text-[11px] text-muted-foreground">
-                  Already in cart: {selected.alreadyInCart}
-                </p>
-              </div>
-
-              <div className="px-6 pb-24 pt-5">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="grid gap-2">
-                    <p className="text-xs font-medium text-muted-foreground">Choose quantity</p>
-                    <div className="flex items-center gap-2">
+                <div className="grid gap-3">
+                  <div>
+                    <p className="mb-2 text-sm font-medium text-slate-900">Quantity</p>
+                    <div className="inline-flex items-center rounded-2xl border border-input bg-background p-1">
                       <Button
                         type="button"
-                        variant="outline"
+                        variant="ghost"
                         size="icon-sm"
-                        onClick={() => setOrderQty((q) => Math.max(0, q - 1))}
+                        onClick={() => setOrderQty((qty) => Math.max(0, qty - 1))}
                         disabled={orderQty <= 0}
                       >
-                        <MinusIcon className="size-4" />
+                        <MinusIcon />
                       </Button>
-                      <div className="w-10 text-center text-base font-semibold">{orderQty}</div>
+                      <span className="min-w-10 text-center text-sm font-medium">{orderQty}</span>
                       <Button
                         type="button"
-                        variant="outline"
+                        variant="ghost"
                         size="icon-sm"
-                        onClick={() => setOrderQty((q) => Math.min(selected.quantity, q + 1))}
-                        disabled={selected.quantity <= 0 || orderQty >= selected.quantity}
+                        onClick={() => setOrderQty((qty) => Math.min(selected.quantity, qty + 1))}
+                        disabled={orderQty >= selected.quantity}
                       >
-                        <PlusIcon className="size-4" />
+                        <PlusIcon />
                       </Button>
                     </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      {selected.quantity > 0 ? `${selected.quantity} more can be added` : 'Sold out'}
-                    </p>
                   </div>
 
-                  <div className="grid gap-2">
-                    <p className="text-xs font-medium text-muted-foreground">Pickup time</p>
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-slate-900">
+                      Pickup time
+                    </label>
                     <input
                       type="time"
                       value={pickupTime}
                       onChange={(e) => setPickupTime(e.target.value)}
-                      className="h-10 w-full rounded-2xl border border-input bg-background px-3 text-sm"
+                      className="w-full rounded-2xl border border-input bg-background px-4 py-3 text-sm focus:outline-none focus:ring-4 focus:ring-ring/20"
                     />
-                    <p className="text-[11px] text-muted-foreground">Required to order</p>
                   </div>
                 </div>
-              </div>
 
-              <div className="absolute inset-x-0 bottom-0 border-t border-border bg-background/80 p-4 supports-backdrop-filter:backdrop-blur">
-                {addCartError && (
-                  <div className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-red-200">
-                    {addCartError}
-                  </div>
-                )}
-                <div className="flex items-center gap-3">
-                  <Button
-                    type="button"
-                    className="h-11 flex-1 rounded-2xl"
-                    disabled={orderQty < 1 || !pickupTime || !canAddToCart(selectedItem, orderQty)}
-                    onClick={handleAddToCart}
-                  >
-                    {selected.quantity <= 0 ? 'Sold out' : 'Add to cart'}
+                {addCartError && <p className="text-sm text-red-600">{addCartError}</p>}
+
+                <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                  <Button type="button" variant="outline" onClick={() => setDetailsOpen(false)}>
+                    Close
                   </Button>
-                  <div className="text-right">
-                    <p className="text-[11px] text-muted-foreground">Total</p>
-                    <p className="text-lg font-bold text-foreground">
-                      ${(selected.price * Math.max(0, orderQty)).toFixed(2)}
-                    </p>
-                  </div>
+                  <Button type="button" onClick={handleAddToCart} disabled={selected.quantity <= 0}>
+                    Add to cart
+                  </Button>
                 </div>
               </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-center gap-3 py-10">
-              <Spinner />
-              <span className="text-sm text-muted-foreground">Loading details...</span>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={addConfirmOpen} onOpenChange={setAddConfirmOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Added to cart</DialogTitle>
-            <DialogDescription>{addConfirmMessage || 'Item added to cart.'}</DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setAddConfirmOpen(false)}>
-              Continue
-            </Button>
-            <Button
-              type="button"
-              onClick={() => {
-                setAddConfirmOpen(false);
-                navigate('/cart');
-              }}
-            >
-              View cart
-            </Button>
-          </div>
         </DialogContent>
       </Dialog>
     </div>

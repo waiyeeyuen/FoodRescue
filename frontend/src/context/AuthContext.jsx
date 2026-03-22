@@ -1,10 +1,10 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
-  useCallback,
 } from 'react';
 
 const AuthContext = createContext(null);
@@ -41,14 +41,13 @@ function initializeUserFromStorage() {
   try {
     const token = localStorage.getItem('token');
     const saved = localStorage.getItem('user');
-    if (token && saved) {
-      return JSON.parse(saved);
-    }
+    if (token && saved) return JSON.parse(saved);
   } catch (e) {
     console.error('Failed to parse user from storage:', e);
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
   }
+
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
   return null;
 }
 
@@ -56,70 +55,29 @@ function getFavoriteStorageKey(userId) {
   return userId ? `favorites_${userId}` : 'favorites_guest';
 }
 
-function initializeFavoritesFromStorage(userId) {
-  try {
-    const saved = localStorage.getItem(getFavoriteStorageKey(userId));
-    if (!saved) return [];
-    const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    console.error('Failed to parse favorites from storage:', e);
-    return [];
-  }
-}
-
 function getOrderStorageKey(userId) {
   return userId ? `orders_${userId}` : 'orders_guest';
 }
 
-function initializeOrdersFromStorage(userId) {
+function readArrayFromStorage(key) {
   try {
-    const saved = localStorage.getItem(getOrderStorageKey(userId));
+    const saved = localStorage.getItem(key);
     if (!saved) return [];
     const parsed = JSON.parse(saved);
     return Array.isArray(parsed) ? parsed : [];
   } catch (e) {
-    console.error('Failed to parse orders from storage:', e);
+    console.error(`Failed to parse localStorage key: ${key}`, e);
     return [];
   }
 }
 
-function getStockStorageKey(userId) {
-  return userId ? `listing_stock_${userId}` : 'listing_stock_guest';
-}
-
-function initializeStockOverridesFromStorage(userId) {
-  try {
-    const saved = localStorage.getItem(getStockStorageKey(userId));
-    if (!saved) return {};
-    const parsed = JSON.parse(saved);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (e) {
-    console.error('Failed to parse stock overrides from storage:', e);
-    return {};
-  }
-}
-
 function getListingKey(item, fallback = 'listing') {
-  const id =
-    item?.Id ??
-    item?.id ??
-    item?.listingId ??
-    item?.ListingId;
-
+  const id = item?.Id ?? item?.id ?? item?.listingId ?? item?.ListingId;
   if (id !== undefined && id !== null) return String(id);
 
   const itemName =
-    item?.itemName ??
-    item?.ItemName ??
-    item?.name ??
-    item?.Name ??
-    fallback;
-
-  const restaurantId =
-    item?.restaurantId ??
-    item?.RestaurantId ??
-    'restaurant';
+    item?.itemName ?? item?.ItemName ?? item?.name ?? item?.Name ?? fallback;
+  const restaurantId = item?.restaurantId ?? item?.RestaurantId ?? 'restaurant';
 
   return `${restaurantId}-${itemName}`;
 }
@@ -138,75 +96,30 @@ function getItemStock(item) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function getItemBaseStock(item, cartItem) {
-  const candidates = [
-    cartItem?.baseStock,
-    cartItem?.originalStock,
-    cartItem?.listingStock,
-    cartItem?.availableStockBeforePurchase,
-    item?.baseStock,
-    item?.originalStock,
-    item?.listingStock,
-    item?.availableStockBeforePurchase,
-    item?.__baseStock,
-    item?.__listingStock,
-    item?.quantity,
-    item?.Quantity,
-    item?.stock,
-    item?.Stock,
-  ];
-
-  for (const candidate of candidates) {
-    const parsed = Number(candidate);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      return parsed;
-    }
-  }
-
-  return 0;
-}
-
-function normalizeListingItem(rawItem, fallbackQuantity) {
+function normalizeListingItem(rawItem) {
   const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
-
-  const existingQty = getItemStock(item);
-  const fallbackQtyNum = Number(fallbackQuantity);
-  const resolvedQty =
-    existingQty > 0
-      ? existingQty
-      : Number.isFinite(fallbackQtyNum) && fallbackQtyNum >= 0
-        ? fallbackQtyNum
-        : 0;
+  const quantity = getItemStock(item);
 
   return {
     ...item,
-    quantity: resolvedQty,
-    __baseStock:
-      Number(item?.__baseStock) > 0
-        ? Number(item.__baseStock)
-        : resolvedQty,
+    quantity,
   };
 }
 
 function normalizeCartEntry(entry) {
   if (!entry || typeof entry !== 'object') {
-    return {
-      item: normalizeListingItem({}, 0),
-      quantity: 0,
-      pickupTime: '',
-    };
+    return { item: normalizeListingItem({}), quantity: 0, pickupTime: '' };
   }
 
-  const rawQuantity = Number(entry?.quantity ?? 0);
-  const quantity = Number.isFinite(rawQuantity) && rawQuantity > 0 ? rawQuantity : 0;
+  const quantity = Number(entry?.quantity ?? 0);
+  const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
 
   const rawItem = entry?.item && typeof entry.item === 'object' ? entry.item : entry;
-  const item = normalizeListingItem(rawItem, getItemBaseStock(rawItem, entry));
 
   return {
     ...entry,
-    item,
-    quantity,
+    item: normalizeListingItem(rawItem),
+    quantity: safeQuantity,
     pickupTime: entry?.pickupTime || '',
   };
 }
@@ -221,7 +134,7 @@ function dedupeOrders(orderList) {
 
   for (let i = 0; i < orderList.length; i += 1) {
     const order = orderList[i];
-    const key =
+    const lineKey =
       order?.lineKey ||
       buildOrderLineKey({
         orderId: order?.orderId || 'unknown-order',
@@ -230,13 +143,10 @@ function dedupeOrders(orderList) {
         index: i,
       });
 
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (seen.has(lineKey)) continue;
+    seen.add(lineKey);
 
-    result.push({
-      ...order,
-      lineKey: key,
-    });
+    result.push({ ...order, lineKey });
   }
 
   return result;
@@ -249,13 +159,10 @@ export function AuthProvider({ children }) {
   const [cart, setCart] = useState([]);
   const [cartLoading, setCartLoading] = useState(false);
   const [favorites, setFavorites] = useState(() =>
-    initializeFavoritesFromStorage(initialUser?.id)
+    readArrayFromStorage(getFavoriteStorageKey(initialUser?.id))
   );
   const [orders, setOrders] = useState(() =>
-    dedupeOrders(initializeOrdersFromStorage(initialUser?.id))
-  );
-  const [stockOverrides, setStockOverrides] = useState(() =>
-    initializeStockOverridesFromStorage(initialUser?.id)
+    dedupeOrders(readArrayFromStorage(getOrderStorageKey(initialUser?.id)))
   );
 
   const accountServiceBaseUrl = normalizeServiceBaseUrl(
@@ -263,12 +170,14 @@ export function AuthProvider({ children }) {
     'account'
   );
 
-  const cartCount = useMemo(() => {
-    return (cart || []).reduce((sum, item) => {
-      const qty = Number(item?.quantity ?? 0);
-      return sum + (Number.isFinite(qty) ? qty : 0);
-    }, 0);
-  }, [cart]);
+  const cartCount = useMemo(
+    () =>
+      cart.reduce((sum, item) => {
+        const qty = Number(item?.quantity ?? 0);
+        return sum + (Number.isFinite(qty) ? qty : 0);
+      }, 0),
+    [cart]
+  );
 
   const favoriteCount = useMemo(() => favorites.length, [favorites]);
   const orderCount = useMemo(() => orders.length, [orders]);
@@ -278,7 +187,7 @@ export function AuthProvider({ children }) {
       const listingKey =
         typeof itemOrId === 'string' ? itemOrId : getListingKey(itemOrId);
 
-      return (cart || []).reduce((sum, cartItem) => {
+      return cart.reduce((sum, cartItem) => {
         const normalizedCartItem = normalizeCartEntry(cartItem);
         const cartListingKey = getListingKey(normalizedCartItem?.item || {});
         if (cartListingKey !== listingKey) return sum;
@@ -292,27 +201,17 @@ export function AuthProvider({ children }) {
 
   const getRemainingStockForListing = useCallback(
     (item) => {
-      const key = getListingKey(item);
       const baseStock = getItemStock(item);
-
-      const overriddenStock =
-        stockOverrides[key] !== undefined && stockOverrides[key] !== null
-          ? Number(stockOverrides[key])
-          : baseStock;
-
-      const safeOverriddenStock = Number.isFinite(overriddenStock) ? overriddenStock : 0;
       const currentCartQty = getCartQuantityForListing(item);
-
-      return Math.max(0, safeOverriddenStock - currentCartQty);
+      return Math.max(0, baseStock - currentCartQty);
     },
-    [stockOverrides, getCartQuantityForListing]
+    [getCartQuantityForListing]
   );
 
   const canAddToCart = useCallback(
     (item, requestedQuantity = 1) => {
       const reqQty = Number(requestedQuantity);
       if (!Number.isFinite(reqQty) || reqQty <= 0) return false;
-
       return getRemainingStockForListing(item) >= reqQty;
     },
     [getRemainingStockForListing]
@@ -341,11 +240,7 @@ export function AuthProvider({ children }) {
           throw new Error(message);
         }
 
-        const nextCart = Array.isArray(data?.cart)
-          ? data.cart.map(normalizeCartEntry)
-          : [];
-
-        setCart(nextCart);
+        setCart(Array.isArray(data?.cart) ? data.cart.map(normalizeCartEntry) : []);
       } finally {
         setCartLoading(false);
       }
@@ -364,29 +259,22 @@ export function AuthProvider({ children }) {
 
     if (!canAddToCart(item, qtyToAdd)) {
       const remaining = getRemainingStockForListing(item);
-      if (remaining <= 0) {
-        throw new Error('This listing is fully reserved or sold out');
-      }
+      if (remaining <= 0) throw new Error('This listing is sold out');
       throw new Error(`You can only add ${remaining} more for this listing`);
     }
 
-    const safeItem = normalizeListingItem(item, getItemStock(item));
-
-    const payload = {
-      item: {
-        ...safeItem,
-        __baseStock: Number(safeItem?.__baseStock ?? getItemStock(safeItem)),
-      },
-      quantity: qtyToAdd,
-      pickupTime,
-    };
+    const safeItem = normalizeListingItem(item);
 
     const res = await fetch(
       `${accountServiceBaseUrl}/account/${encodeURIComponent(user.id)}/cart/items`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          item: safeItem,
+          quantity: qtyToAdd,
+          pickupTime,
+        }),
       }
     );
 
@@ -400,23 +288,15 @@ export function AuthProvider({ children }) {
       throw new Error(message);
     }
 
-    const nextCart = Array.isArray(data?.cart)
-      ? data.cart.map(normalizeCartEntry)
-      : [];
+    const nextCart = Array.isArray(data?.cart) ? data.cart.map(normalizeCartEntry) : [];
 
     const totalForListing = nextCart.reduce((sum, cartItem) => {
-      const sameListing =
-        getListingKey(cartItem?.item || {}) === getListingKey(safeItem);
+      const sameListing = getListingKey(cartItem?.item || {}) === getListingKey(safeItem);
       if (!sameListing) return sum;
       return sum + Number(cartItem?.quantity ?? 0);
     }, 0);
 
-    const allowedStock =
-      stockOverrides[getListingKey(safeItem)] !== undefined
-        ? Number(stockOverrides[getListingKey(safeItem)])
-        : getItemStock(safeItem);
-
-    if (totalForListing > allowedStock) {
+    if (totalForListing > getItemStock(safeItem)) {
       throw new Error('Cart quantity exceeds available listing quantity');
     }
 
@@ -443,11 +323,7 @@ export function AuthProvider({ children }) {
       throw new Error(message);
     }
 
-    const nextCart = Array.isArray(data?.cart)
-      ? data.cart.map(normalizeCartEntry)
-      : [];
-
-    setCart(nextCart);
+    setCart(Array.isArray(data?.cart) ? data.cart.map(normalizeCartEntry) : []);
     return data;
   };
 
@@ -457,9 +333,7 @@ export function AuthProvider({ children }) {
 
     const res = await fetch(
       `${accountServiceBaseUrl}/account/${encodeURIComponent(user.id)}/cart/clear`,
-      {
-        method: 'POST',
-      }
+      { method: 'POST' }
     );
 
     const data = await readResponseBody(res);
@@ -472,257 +346,109 @@ export function AuthProvider({ children }) {
       throw new Error(message);
     }
 
-    const nextCart = Array.isArray(data?.cart)
-      ? data.cart.map(normalizeCartEntry)
-      : [];
-
-    setCart(nextCart);
+    setCart(Array.isArray(data?.cart) ? data.cart.map(normalizeCartEntry) : []);
     return data;
   };
 
-  const isFavorite = (itemOrId) => {
-    const key =
-      typeof itemOrId === 'string'
-        ? itemOrId
-        : getListingKey(itemOrId);
+  const isFavorite = useCallback(
+    (itemOrId) => {
+      const key = typeof itemOrId === 'string' ? itemOrId : getListingKey(itemOrId);
+      return favorites.some((fav) => getListingKey(fav) === key);
+    },
+    [favorites]
+  );
 
-    return favorites.some((fav) => getListingKey(fav) === key);
-  };
-
-  const toggleFavorite = (item) => {
+  const toggleFavorite = useCallback((item) => {
     const key = getListingKey(item);
 
     setFavorites((prev) => {
       const exists = prev.some((fav) => getListingKey(fav) === key);
-      if (exists) {
-        return prev.filter((fav) => getListingKey(fav) !== key);
-      }
+      if (exists) return prev.filter((fav) => getListingKey(fav) !== key);
       return [...prev, item];
     });
-  };
+  }, []);
 
-  const removeFavorite = (itemOrId) => {
-    const key =
-      typeof itemOrId === 'string'
-        ? itemOrId
-        : getListingKey(itemOrId);
+  const removeFavorite = useCallback((itemOrId) => {
+    const key = typeof itemOrId === 'string' ? itemOrId : getListingKey(itemOrId);
+    setFavorites((prev) => prev.filter((fav) => getListingKey(fav) !== key));
+  }, []);
 
-    setFavorites((prev) =>
-      prev.filter((fav) => getListingKey(fav) !== key)
-    );
-  };
-
-  const clearFavorites = () => {
+  const clearFavorites = useCallback(() => {
     setFavorites([]);
-  };
+  }, []);
 
-  const addOrder = async (order) => {
+  const addOrder = useCallback(async (order) => {
     if (!order) return null;
+    setOrders((prev) => dedupeOrders([order, ...prev]));
+    return order;
+  }, []);
 
-    const normalizedItem = normalizeListingItem(
-      order?.item || {},
-      getItemStock(order?.item || {})
-    );
+  const addOrdersFromCart = useCallback(async ({ items, pickupTime, orderId }) => {
+    const safeItems = Array.isArray(items) ? items : [];
+    if (safeItems.length === 0) return [];
 
-    const normalized = {
-      ...order,
-      item: normalizedItem,
-      quantity: Number(order?.quantity ?? 1) || 1,
-      createdAt: order?.createdAt || new Date().toISOString(),
-      status: order?.status || 'Active',
-      lineKey:
-        order?.lineKey ||
-        buildOrderLineKey({
-          orderId: order?.orderId || `ORD-${Date.now()}`,
-          item: normalizedItem,
-          pickupTime: order?.pickupTime || '',
-          index: 0,
-        }),
-    };
-
-    setOrders((prev) => {
-      const nextOrders = dedupeOrders([normalized, ...prev]);
-
-      try {
-        localStorage.setItem(
-          getOrderStorageKey(user?.id),
-          JSON.stringify(nextOrders)
-        );
-      } catch (e) {
-        console.error('Failed to save orders to storage:', e);
-      }
-
-      return nextOrders;
-    });
-
-    return normalized;
-  };
-
-  const addOrdersFromCart = async ({ items, pickupTime, orderId }) => {
-    if (!Array.isArray(items) || items.length === 0) {
-      console.warn('addOrdersFromCart: no items received', items);
-      return [];
-    }
+    const resolvedOrderId =
+      orderId || `ORD-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const createdAt = new Date().toISOString();
-    const resolvedOrderId = orderId || `ORD-${Date.now()}`;
 
-    const normalizedOrders = items
-      .map((rawCartItem, index) => {
-        const cartItem = normalizeCartEntry(rawCartItem);
-        const sourceItem =
-          cartItem?.item && typeof cartItem.item === 'object'
-            ? cartItem.item
-            : rawCartItem?.item && typeof rawCartItem.item === 'object'
-              ? rawCartItem.item
-              : rawCartItem;
+    const normalizedOrders = safeItems.map((entry, index) => {
+      const normalizedEntry = normalizeCartEntry(entry);
 
-        const normalizedItem = normalizeListingItem(
-          sourceItem,
-          getItemBaseStock(sourceItem, rawCartItem)
-        );
-
-        const quantity = Number(cartItem?.quantity ?? rawCartItem?.quantity ?? 0);
-        const resolvedPickupTime =
-          cartItem?.pickupTime || rawCartItem?.pickupTime || pickupTime || '';
-
-        if (!sourceItem || !Number.isFinite(quantity) || quantity <= 0) {
-          return null;
-        }
-
-        return {
+      return {
+        orderId: resolvedOrderId,
+        lineKey: buildOrderLineKey({
           orderId: resolvedOrderId,
-          lineKey: buildOrderLineKey({
-            orderId: resolvedOrderId,
-            item: normalizedItem,
-            pickupTime: resolvedPickupTime,
-            index,
-          }),
-          createdAt,
-          pickupTime: resolvedPickupTime,
-          status: 'Active',
-          item: normalizedItem,
-          quantity,
-        };
-      })
-      .filter(Boolean);
-
-    if (!normalizedOrders.length) {
-      console.warn('addOrdersFromCart: normalized orders empty', items);
-      return [];
-    }
-
-    setOrders((prev) => {
-      const nextOrders = dedupeOrders([...normalizedOrders, ...prev]);
-
-      try {
-        localStorage.setItem(
-          getOrderStorageKey(user?.id),
-          JSON.stringify(nextOrders)
-        );
-      } catch (e) {
-        console.error('Failed to save orders to storage:', e);
-      }
-
-      console.log('Orders saved:', nextOrders);
-      return nextOrders;
+          item: normalizedEntry.item,
+          pickupTime: pickupTime || normalizedEntry.pickupTime || '',
+          index,
+        }),
+        item: normalizedEntry.item,
+        quantity: normalizedEntry.quantity,
+        pickupTime: pickupTime || normalizedEntry.pickupTime || '',
+        status: 'Active',
+        createdAt,
+      };
     });
 
+    setOrders((prev) => dedupeOrders([...normalizedOrders, ...prev]));
     return normalizedOrders;
-  };
+  }, []);
 
-  const recordPurchasedStock = async (items) => {
-    if (!Array.isArray(items) || items.length === 0) return;
-
-    setStockOverrides((prev) => {
-      const next = { ...prev };
-
-      for (const rawCartItem of items) {
-        const cartItem = normalizeCartEntry(rawCartItem);
-        const item = cartItem?.item || {};
-        const key = getListingKey(item);
-        const purchasedQty = Number(cartItem?.quantity ?? 1);
-
-        if (!Number.isFinite(purchasedQty) || purchasedQty <= 0) continue;
-
-        const currentStock =
-          next[key] !== undefined && next[key] !== null
-            ? Number(next[key])
-            : Math.max(
-                getItemBaseStock(item, cartItem),
-                getItemStock(item),
-                purchasedQty
-              );
-
-        const safeCurrentStock = Number.isFinite(currentStock) ? currentStock : 0;
-        const nextStock = Math.max(0, safeCurrentStock - purchasedQty);
-
-        next[key] = nextStock;
-      }
-
-      return next;
-    });
-  };
-
-  const clearOrders = () => {
+  const clearOrders = useCallback(() => {
     setOrders([]);
+  }, []);
 
-    try {
-      localStorage.removeItem(getOrderStorageKey(user?.id));
-    } catch (e) {
-      console.error('Failed to clear orders from storage:', e);
-    }
-  };
+  const recordPurchasedStock = useCallback(async () => {
+    return { ok: true };
+  }, []);
 
   useEffect(() => {
-    if (!user?.id || user?.restaurantName) {
+    if (user?.id && !user?.restaurantName) {
+      refreshCart(user.id).catch((e) => {
+        console.error('Failed to refresh cart:', e);
+        setCart([]);
+      });
+    } else {
       setCart([]);
-      return;
     }
-
-    refreshCart(user.id).catch(() => {
-      setCart([]);
-    });
-  }, [user?.id, user?.restaurantName, refreshCart]);
-
-  useEffect(() => {
-    setFavorites(initializeFavoritesFromStorage(user?.id));
-    setOrders(dedupeOrders(initializeOrdersFromStorage(user?.id)));
-    setStockOverrides(initializeStockOverridesFromStorage(user?.id));
-  }, [user?.id]);
+  }, [refreshCart, user?.id, user?.restaurantName]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(
-        getFavoriteStorageKey(user?.id),
-        JSON.stringify(favorites)
-      );
+      localStorage.setItem(getFavoriteStorageKey(user?.id), JSON.stringify(favorites));
     } catch (e) {
-      console.error('Failed to save favorites to storage:', e);
+      console.error('Failed to save favorites:', e);
     }
   }, [favorites, user?.id]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(
-        getOrderStorageKey(user?.id),
-        JSON.stringify(dedupeOrders(orders))
-      );
+      localStorage.setItem(getOrderStorageKey(user?.id), JSON.stringify(orders));
     } catch (e) {
-      console.error('Failed to save orders to storage:', e);
+      console.error('Failed to save orders:', e);
     }
   }, [orders, user?.id]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        getStockStorageKey(user?.id),
-        JSON.stringify(stockOverrides)
-      );
-    } catch (e) {
-      console.error('Failed to save stock overrides to storage:', e);
-    }
-  }, [stockOverrides, user?.id]);
 
   const register = async ({ username, email, password }) => {
     const res = await fetch(`${accountServiceBaseUrl}/account/register`, {
@@ -748,16 +474,17 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const saveSession = ({ token, user }) => {
+  const saveSession = ({ token, user: nextUser }) => {
     localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(user));
-    setUser(user);
-    setFavorites(initializeFavoritesFromStorage(user?.id));
-    setOrders(dedupeOrders(initializeOrdersFromStorage(user?.id)));
-    setStockOverrides(initializeStockOverridesFromStorage(user?.id));
+    localStorage.setItem('user', JSON.stringify(nextUser));
+    setUser(nextUser);
+    setFavorites(readArrayFromStorage(getFavoriteStorageKey(nextUser?.id)));
+    setOrders(dedupeOrders(readArrayFromStorage(getOrderStorageKey(nextUser?.id))));
 
-    if (user?.id) {
-      refreshCart(user.id).catch(() => setCart([]));
+    if (nextUser?.id && !nextUser?.restaurantName) {
+      refreshCart(nextUser.id).catch(() => setCart([]));
+    } else {
+      setCart([]);
     }
   };
 
@@ -792,7 +519,6 @@ export function AuthProvider({ children }) {
     setCart([]);
     setFavorites([]);
     setOrders([]);
-    setStockOverrides({});
   };
 
   return (
@@ -822,7 +548,6 @@ export function AuthProvider({ children }) {
         addOrder,
         addOrdersFromCart,
         clearOrders,
-        stockOverrides,
         getCartQuantityForListing,
         getRemainingStockForListing,
         canAddToCart,

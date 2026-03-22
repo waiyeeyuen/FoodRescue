@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CheckCircle2Icon } from 'lucide-react';
 
 import { useAuth } from '@/context/AuthContext';
@@ -17,7 +17,6 @@ function readPendingCheckout() {
   try {
     const raw = sessionStorage.getItem('pending_checkout');
     if (!raw) return null;
-
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch (e) {
@@ -26,141 +25,145 @@ function readPendingCheckout() {
   }
 }
 
-function normalizePendingItems(items) {
-  if (!Array.isArray(items)) return [];
+function getProcessedSessionKey(sessionId) {
+  return sessionId ? `payment_success_processed_${sessionId}` : null;
+}
 
-  return items
-    .map((entry) => {
-      if (!entry || typeof entry !== 'object') return null;
-
-      const item =
-        entry?.item && typeof entry.item === 'object'
-          ? entry.item
-          : entry;
-
-      const quantity = Number(entry?.quantity ?? 0);
-
-      if (!item || !Number.isFinite(quantity) || quantity <= 0) {
-        return null;
-      }
-
-      return {
-        ...entry,
-        item,
-        quantity,
-        pickupTime: entry?.pickupTime || '',
-      };
-    })
-    .filter(Boolean);
+async function readErrorMessage(response, fallbackMessage) {
+  try {
+    const data = await response.json();
+    return data?.error || fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
 }
 
 export default function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { addOrdersFromCart, recordPurchasedStock, clearCart } = useAuth();
+  const processedRef = useRef(false);
+
+  const { user, addOrdersFromCart, clearCart } = useAuth();
+
+  const [status, setStatus] = useState('processing');
+  const [message, setMessage] = useState('Finalising your order...');
 
   const sessionId = searchParams.get('session_id');
-  const hasFinalizedRef = useRef(false);
-  const [finalizeError, setFinalizeError] = useState('');
+  const orderServiceUrl =
+    import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
+
+  async function sendOrderToBackend({ userId, items, orderId, pickupTime }) {
+    if (!userId || !Array.isArray(items) || items.length === 0) return;
+
+    const response = await fetch(`${orderServiceUrl}/orders`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        customerId: userId,
+        orderId,
+        pickupTime,
+        items,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorMessage = await readErrorMessage(
+        response,
+        'Failed to save order to backend'
+      );
+      throw new Error(errorMessage);
+    }
+  }
 
   useEffect(() => {
-    const finalizeOrder = async () => {
-      if (hasFinalizedRef.current) return;
+    if (processedRef.current) return;
+    processedRef.current = true;
 
-      const pendingCheckout = readPendingCheckout();
-      console.log('pendingCheckout:', pendingCheckout);
-
-      const itemsToOrder = normalizePendingItems(pendingCheckout?.items);
-      console.log('itemsToOrder:', itemsToOrder);
-
-      if (!itemsToOrder.length) {
-        setFinalizeError('No pending checkout items found.');
-        return;
-      }
-
-      const resolvedOrderId =
-        pendingCheckout?.orderId ||
-        sessionId ||
-        `ORD-${Date.now()}`;
-
-      const processedKey = `processed_order_${resolvedOrderId}`;
-
-      if (sessionStorage.getItem(processedKey) === 'done') {
-        hasFinalizedRef.current = true;
-        return;
-      }
-
-      hasFinalizedRef.current = true;
-      sessionStorage.setItem(processedKey, 'processing');
-      setFinalizeError('');
-
+    async function finalizePayment() {
       try {
-        const createdOrders = await addOrdersFromCart({
-          items: itemsToOrder,
-          pickupTime: pendingCheckout?.pickupTime || '',
-          orderId: resolvedOrderId,
+        const pending = readPendingCheckout();
+        const processedKey = getProcessedSessionKey(sessionId);
+
+        if (processedKey && sessionStorage.getItem(processedKey) === 'true') {
+          setStatus('success');
+          setMessage('Payment already processed.');
+          return;
+        }
+
+        if (!pending) {
+          setStatus('success');
+          setMessage('Payment received. No pending checkout data was found.');
+          return;
+        }
+
+        const items = Array.isArray(pending?.items) ? pending.items : [];
+        const pickupTime = pending?.pickupTime || '';
+        const orderId =
+          pending?.orderId || pending?.sessionId || sessionId || `ORD-${Date.now()}`;
+
+        if (items.length > 0) {
+          await addOrdersFromCart({ items, pickupTime, orderId });
+
+          try {
+            await sendOrderToBackend({
+              userId: user?.id,
+              items,
+              orderId,
+              pickupTime,
+            });
+          } catch (err) {
+            console.error('Failed to sync order to backend:', err);
+          }
+        }
+
+        await clearCart().catch((err) => {
+          console.warn('Failed to clear cart after payment:', err);
         });
 
-        console.log('createdOrders:', createdOrders);
+        if (processedKey) {
+          sessionStorage.setItem(processedKey, 'true');
+        }
 
-        await Promise.resolve(recordPurchasedStock(itemsToOrder));
-
-        sessionStorage.setItem(processedKey, 'done');
         sessionStorage.removeItem('pending_checkout');
 
-        await clearCart().catch(() => {});
-      } catch (e) {
-        console.error('Failed to finalize order:', e);
-        sessionStorage.removeItem(processedKey);
-        setFinalizeError('Failed to save your order. Please try again.');
-        hasFinalizedRef.current = false;
+        setStatus('success');
+        setMessage('Your payment was successful and your order has been recorded.');
+      } catch (err) {
+        console.error('Failed to finalize payment success flow:', err);
+        setStatus('error');
+        setMessage(err?.message || 'Payment succeeded, but the order could not be finalised.');
       }
-    };
+    }
 
-    finalizeOrder();
-  }, [addOrdersFromCart, recordPurchasedStock, clearCart, sessionId]);
+    finalizePayment();
+  }, [sessionId, user?.id, addOrdersFromCart, clearCart, orderServiceUrl]);
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-4">
-      <Card className="w-full max-w-md text-center shadow-lg">
-        <CardHeader className="pb-2">
-          <div className="mb-4 flex justify-center">
-            <CheckCircle2Icon className="size-16 text-green-500" />
+      <Card className="w-full max-w-lg rounded-2xl shadow-sm">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+            <CheckCircle2Icon className="h-8 w-8 text-green-600" />
           </div>
-          <CardTitle className="text-2xl font-bold">Payment Successful!</CardTitle>
-          <CardDescription className="mt-1 text-base">
-            Your order has been placed and confirmed. You&apos;ll receive updates as your order is prepared.
-          </CardDescription>
+          <CardTitle className="text-2xl">
+            {status === 'error' ? 'Payment Received' : 'Payment Successful'}
+          </CardTitle>
+          <CardDescription>{message}</CardDescription>
         </CardHeader>
 
-        <CardContent className="space-y-3 pb-2">
-          {sessionId && (
-            <div className="inline-flex items-center rounded-full bg-muted px-3 py-1 font-mono text-xs text-muted-foreground">
-              Session: {sessionId.slice(0, 25)}...
-            </div>
-          )}
-
-          {finalizeError && (
-            <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600 ring-1 ring-red-200">
-              {finalizeError}
-            </div>
-          )}
+        <CardContent className="text-center text-sm text-slate-600">
+          {status === 'processing' && <p>We are updating your order now.</p>}
+          {status === 'success' && <p>Your order is ready in the Orders tab.</p>}
+          {status === 'error' && <p>Please check your Orders tab or try refreshing once.</p>}
         </CardContent>
 
-        <CardFooter className="flex flex-col gap-2 pt-4">
-          <Button
-            type="button"
-            className="h-11 w-full rounded-2xl"
-            onClick={() => navigate('/orders')}
-          >
-            View My Orders
+        <CardFooter className="flex justify-center gap-3">
+          <Button variant="outline" onClick={() => navigate('/orders')}>
+            View Orders
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full rounded-2xl"
-            onClick={() => navigate('/')}
-          >
+          <Button onClick={() => navigate('/')}>
             Back to Home
           </Button>
         </CardFooter>

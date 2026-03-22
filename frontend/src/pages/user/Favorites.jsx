@@ -126,7 +126,7 @@ export default function UserFavorites() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-3xl font-bold text-slate-900">Favorites</h1>
+        <h1 className="text-3xl font-bold text-slate-900">Favorites - Unrelated content to User Scenario</h1>
         <p className="text-slate-600 mt-2">Your saved food listings</p>
       </div>
 

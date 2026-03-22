@@ -30,23 +30,23 @@ function OrderCard({ order }) {
     originalPrice > 0 ? Math.round((1 - price / originalPrice) * 100) : 0;
 
   return (
-    <div className="rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border overflow-hidden flex flex-col h-full">
+    <div className="flex h-full flex-col overflow-hidden rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border">
       <div className="relative">
         <img
           src={imageURL || '/logo.png'}
           alt={itemName}
-          className={`h-44 w-full ${imageURL ? 'object-cover' : 'object-contain p-8 bg-muted'}`}
+          className={`h-44 w-full ${imageURL ? 'object-cover' : 'object-contain bg-muted p-8'}`}
           loading="lazy"
         />
 
         {discount > 0 && (
-          <div className="absolute top-3 left-3 rounded-full bg-foreground/90 text-background px-2 py-1 text-xs font-semibold">
+          <div className="absolute left-3 top-3 rounded-full bg-foreground/90 px-2 py-1 text-xs font-semibold text-background">
             -{discount}%
           </div>
         )}
 
         <div
-          className={`absolute top-3 right-3 rounded-full px-2 py-1 text-xs font-semibold ${
+          className={`absolute right-3 top-3 rounded-full px-2 py-1 text-xs font-semibold ${
             status === 'Active'
               ? 'bg-green-100 text-green-700'
               : 'bg-muted text-muted-foreground'
@@ -56,20 +56,20 @@ function OrderCard({ order }) {
         </div>
       </div>
 
-      <div className="p-4 flex flex-col gap-3 flex-1">
+      <div className="flex flex-1 flex-col gap-3 p-4">
         <div>
-          <h3 className="font-semibold text-base leading-tight line-clamp-2">
+          <h3 className="line-clamp-2 text-base font-semibold leading-tight">
             {itemName}
           </h3>
           {(restaurantName || restaurantId) && (
-            <p className="text-sm text-muted-foreground mt-1 truncate">
+            <p className="mt-1 truncate text-sm text-muted-foreground">
               {restaurantName ?? restaurantId}
             </p>
           )}
         </div>
 
         {description && (
-          <p className="text-sm text-muted-foreground line-clamp-2">
+          <p className="line-clamp-2 text-sm text-muted-foreground">
             {description}
           </p>
         )}
@@ -93,15 +93,15 @@ function OrderCard({ order }) {
 
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div className="rounded-xl bg-muted/40 px-3 py-2">
-            <p className="text-muted-foreground text-xs">Quantity</p>
+            <p className="text-xs text-muted-foreground">Quantity</p>
             <p className="font-semibold">{quantity}</p>
           </div>
           <div className="rounded-xl bg-muted/40 px-3 py-2">
-            <p className="text-muted-foreground text-xs">Total</p>
+            <p className="text-xs text-muted-foreground">Total</p>
             <p className="font-semibold">${(price * quantity).toFixed(2)}</p>
           </div>
-          <div className="rounded-xl bg-muted/40 px-3 py-2 col-span-2">
-            <p className="text-muted-foreground text-xs">Pickup time</p>
+          <div className="col-span-2 rounded-xl bg-muted/40 px-3 py-2">
+            <p className="text-xs text-muted-foreground">Pickup time</p>
             <p className="font-semibold">{pickupTime || '-'}</p>
           </div>
         </div>
@@ -119,7 +119,7 @@ function OrderCard({ order }) {
           )}
 
           {order?.orderId && (
-            <p className="text-xs text-muted-foreground break-all">
+            <p className="break-all text-xs text-muted-foreground">
               Order ID: {order.orderId}
             </p>
           )}
@@ -168,17 +168,17 @@ export default function UserOrders() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-3xl font-bold text-slate-900">My Orders</h1>
-        <p className="text-slate-600 mt-2">Active pickups and past orders</p>
+        <p className="mt-2 text-slate-600">Active pickups and past orders</p>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative max-w-xl w-full">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+        <div className="relative w-full max-w-xl">
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search orders..."
-            className="w-full rounded-xl border border-input bg-background pl-9 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
+            className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
           />
         </div>
 
@@ -211,7 +211,7 @@ export default function UserOrders() {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visibleOrders.map((order, idx) => (
             <OrderCard
               key={order?.lineKey || `${order?.orderId || 'order'}-${idx}`}
