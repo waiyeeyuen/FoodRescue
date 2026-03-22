@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeftIcon, HeartIcon, MinusIcon, PlusIcon, SearchIcon, SparklesIcon, XIcon } from 'lucide-react';
+import {
+  ChevronLeftIcon,
+  HeartIcon,
+  MinusIcon,
+  PlusIcon,
+  SearchIcon,
+  SparklesIcon,
+  XIcon,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/context/AuthContext';
@@ -20,6 +28,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
+const MAX_RECOMMENDATIONS = 6;
+
 function getField(item, ...keys) {
   for (const key of keys) {
     if (item && item[key] !== undefined && item[key] !== null) return item[key];
@@ -27,14 +37,86 @@ function getField(item, ...keys) {
   return undefined;
 }
 
-function ListingCard({ item, aiRecommended = false, aiReason = null }) {
+function getListingId(item) {
+  const id = getField(item, 'Id', 'id', 'listingId', 'ListingId');
+  return id !== undefined && id !== null ? String(id) : null;
+}
+
+function getRawQuantity(item) {
+  const value = Number(
+    getField(
+      item,
+      'quantity',
+      'Quantity',
+      'stock',
+      'Stock',
+      'remainingQuantity',
+      'RemainingQuantity'
+    ) ?? 0
+  );
+  return Number.isFinite(value) ? value : 0;
+}
+
+function extractRecommendationMeta(recData) {
+  const recommendedIds = [];
+  const reasonsById = new Map();
+
+  const recommendedListings = Array.isArray(recData?.recommendedListings)
+    ? recData.recommendedListings
+    : [];
+
+  const recommendedListingIds = Array.isArray(recData?.recommendedListingIds)
+    ? recData.recommendedListingIds
+    : [];
+
+  for (const rawId of recommendedListingIds) {
+    if (rawId === undefined || rawId === null) continue;
+    recommendedIds.push(String(rawId));
+  }
+
+  for (const item of recommendedListings) {
+    const id = getListingId(item);
+    if (!id) continue;
+
+    recommendedIds.push(id);
+
+    if (item?.aiReason) {
+      reasonsById.set(id, item.aiReason);
+    }
+  }
+
+  const dedupedOrderedIds = [];
+  const seen = new Set();
+
+  for (const id of recommendedIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    dedupedOrderedIds.push(id);
+
+    if (dedupedOrderedIds.length >= MAX_RECOMMENDATIONS) break;
+  }
+
+  return {
+    recommendedIds: dedupedOrderedIds,
+    reasonsById,
+  };
+}
+
+function ListingCard({
+  item,
+  aiRecommended = false,
+  aiReason = null,
+  isFavorited = false,
+  onToggleFavorite,
+}) {
   const itemName = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
   const description = getField(item, 'description', 'Description');
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
   const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
   const restaurantId = getField(item, 'restaurantId', 'RestaurantId');
-  const quantity = Number(getField(item, 'quantity', 'Quantity') ?? 0);
+
+  const remainingQuantity = Number(item?.remainingQuantity ?? getRawQuantity(item));
 
   const price = Number(getField(item, 'price', 'Price') ?? 0);
   const originalPrice = Number(getField(item, 'originalPrice', 'OriginalPrice') ?? 0);
@@ -42,63 +124,83 @@ function ListingCard({ item, aiRecommended = false, aiReason = null }) {
 
   const expiryTimeRaw = getField(item, 'expiryTime', 'ExpiryTime');
   const expiryDate = expiryTimeRaw ? new Date(expiryTimeRaw) : null;
-  const isExpiringSoon = useMemo(() => {
-    if (!expiryDate || Number.isNaN(expiryDate.getTime())) return false;
-    return expiryDate.getTime() - Date.now() < 24 * 60 * 60 * 1000;
-  }, [expiryDate]);
+
+  const isExpiringSoon =
+    expiryDate && !Number.isNaN(expiryDate.getTime())
+      ? expiryDate.getTime() - Date.now() < 24 * 60 * 60 * 1000
+      : false;
 
   return (
-    <div className="rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border overflow-hidden flex flex-col transition will-change-transform group-hover:shadow-md group-hover:ring-foreground/15">
+    <div className="h-full overflow-hidden rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border transition will-change-transform group-hover:shadow-md group-hover:ring-foreground/15">
       <div className="relative">
         <img
-          src={imageURL || "/logo.png"}
+          src={imageURL || '/logo.png'}
           alt={itemName}
-          className={`h-40 w-full ${imageURL ? "object-cover" : "object-contain p-8 bg-muted"}`}
+          className={`h-40 w-full ${imageURL ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
           loading="lazy"
         />
+
         {imageURL && (
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 via-black/0 to-black/0" />
         )}
+
         {discount > 0 && (
-          <div className="absolute top-3 left-3 rounded-full bg-foreground/90 text-background px-2 py-1 text-xs font-semibold">
+          <div className="absolute left-3 top-3 rounded-full bg-foreground/90 px-2 py-1 text-xs font-semibold text-background">
             -{discount}%
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleFavorite?.(item);
+          }}
+          className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/90 shadow-md ring-1 ring-black/5 transition hover:scale-105 hover:bg-white"
+          aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+        >
+          <HeartIcon
+            className={`size-4 ${isFavorited ? 'fill-red-500 text-red-500' : 'text-slate-700'}`}
+          />
+        </button>
+
         {aiRecommended && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Badge
-                  className="absolute top-3 right-3 flex items-center gap-1 bg-violet-600 hover:bg-violet-700 text-white text-[11px] px-2 py-0.5 rounded-full shadow-md cursor-default"
+                  className="absolute bottom-3 right-3 cursor-default rounded-full bg-violet-600 px-2 py-0.5 text-[11px] text-white shadow-md hover:bg-violet-700"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <SparklesIcon className="size-3" />
-                  AI Pick
+                  <span className="flex items-center gap-1">
+                    <SparklesIcon className="size-3" />
+                    AI Pick
+                  </span>
                 </Badge>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[180px] text-center">
-                ✨ {aiReason || "Recommended for you"}
+                ✨ {aiReason || 'Recommended for you'}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         )}
       </div>
 
-      <div className="p-4 flex flex-col gap-2 flex-1">
+      <div className="flex flex-1 flex-col gap-2 p-4">
         <div className="flex items-start justify-between gap-2">
-          <h3 className="font-semibold leading-tight line-clamp-2">{itemName}</h3>
+          <h3 className="line-clamp-2 font-semibold leading-tight">{itemName}</h3>
           {cuisineType && (
-            <span className="text-xs bg-muted text-muted-foreground rounded-full px-2 py-0.5 whitespace-nowrap">
+            <span className="whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {cuisineType}
             </span>
           )}
         </div>
 
         {description && (
-          <p className="text-sm text-muted-foreground line-clamp-2">{description}</p>
+          <p className="line-clamp-2 text-sm text-muted-foreground">{description}</p>
         )}
 
-        <div className="flex items-center gap-2 mt-auto pt-2">
+        <div className="mt-auto flex items-center gap-2 pt-2">
           <span className="text-lg font-bold">
             ${Number.isFinite(price) ? price.toFixed(2) : '0.00'}
           </span>
@@ -110,9 +212,9 @@ function ListingCard({ item, aiRecommended = false, aiReason = null }) {
         </div>
 
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>Qty: {Number.isFinite(quantity) ? quantity : 0}</span>
+          <span>Qty: {remainingQuantity}</span>
           {expiryDate && !Number.isNaN(expiryDate.getTime()) ? (
-            <span className={isExpiringSoon ? 'text-red-500 font-semibold' : ''}>
+            <span className={isExpiringSoon ? 'font-semibold text-red-500' : ''}>
               Expires {expiryDate.toLocaleDateString()}
             </span>
           ) : (
@@ -121,7 +223,7 @@ function ListingCard({ item, aiRecommended = false, aiReason = null }) {
         </div>
 
         {(restaurantName || restaurantId) && (
-          <p className="text-xs text-muted-foreground truncate">{restaurantName ?? restaurantId}</p>
+          <p className="truncate text-xs text-muted-foreground">{restaurantName ?? restaurantId}</p>
         )}
       </div>
     </div>
@@ -135,7 +237,15 @@ export default function UserHome() {
     import.meta.env.VITE_RECOMMENDATION_SERVICE_URL || 'http://localhost:4000';
 
   const navigate = useNavigate();
-  const { user, addToCart } = useAuth();
+  const {
+    user,
+    addToCart,
+    toggleFavorite,
+    isFavorite,
+    getRemainingStockForListing,
+    canAddToCart,
+    getCartQuantityForListing,
+  } = useAuth();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeListings, setActiveListings] = useState([]);
@@ -154,59 +264,84 @@ export default function UserHome() {
   useEffect(() => {
     const controller = new AbortController();
 
-    const loadActiveListings = async () => {
+    const loadListings = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        let listings = [];
+        const inventoryRes = await fetch(`${inventoryServiceUrl}/inventory/active`, {
+          signal: controller.signal,
+        });
 
-        if (user?.id) {
-          const res = await fetch(
-            `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}`,
-            { signal: controller.signal }
-          );
-          if (!res.ok) {
-            let message = 'Failed to load recommendations';
-            try {
-              const body = await res.json();
-              message = body?.error || message;
-            } catch { /* ignore */ }
-            throw new Error(message);
-          }
-          const data = await res.json();
-          const recommended = Array.isArray(data.recommendedListings) ? data.recommendedListings : [];
-          const fallback = Array.isArray(data.fallbackListings) ? data.fallbackListings : [];
-
-          setGeminiUsed(data.gemini?.used ?? false);
-          setGeminiReasoning(data.gemini?.reasoning ?? '');
-
-          const seen = new Set();
-          for (const item of [...recommended, ...fallback]) {
-            const id = getField(item, 'Id', 'id', 'listingId', 'ListingId');
-            const key = id !== undefined && id !== null ? String(id) : null;
-            if (key === null || !seen.has(key)) {
-              if (key !== null) seen.add(key);
-              listings.push(item);
-            }
-          }
-        } else {
-          const res = await fetch(`${inventoryServiceUrl}/inventory/active`, {
-            signal: controller.signal,
-          });
-          if (!res.ok) {
-            let message = 'Failed to load active listings';
-            try {
-              const body = await res.json();
-              message = body?.error || message;
-            } catch { /* ignore */ }
-            throw new Error(message);
-          }
-          const data = await res.json();
-          listings = Array.isArray(data) ? data : [];
+        if (!inventoryRes.ok) {
+          let message = 'Failed to load active listings';
+          try {
+            const body = await inventoryRes.json();
+            message = body?.error || message;
+          } catch {}
+          throw new Error(message);
         }
 
-        setActiveListings(listings);
+        const inventoryData = await inventoryRes.json();
+        const inventoryListings = Array.isArray(inventoryData) ? inventoryData : [];
+
+        let recommendedIds = [];
+        let reasonsById = new Map();
+
+        if (user?.id) {
+          try {
+            const recRes = await fetch(
+              `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}`,
+              { signal: controller.signal }
+            );
+
+            if (recRes.ok) {
+              const recData = await recRes.json();
+
+              const extracted = extractRecommendationMeta(recData);
+              recommendedIds = extracted.recommendedIds;
+              reasonsById = extracted.reasonsById;
+
+              setGeminiUsed(recData?.gemini?.used ?? false);
+              setGeminiReasoning(recData?.gemini?.reasoning ?? '');
+            } else {
+              setGeminiUsed(false);
+              setGeminiReasoning('');
+            }
+          } catch (e) {
+            console.warn('Recommendations failed, using inventory only:', e);
+            setGeminiUsed(false);
+            setGeminiReasoning('');
+          }
+        } else {
+          setGeminiUsed(false);
+          setGeminiReasoning('');
+        }
+
+        const inventoryById = new Map();
+        for (const item of inventoryListings) {
+          const id = getListingId(item);
+          if (id) inventoryById.set(id, item);
+        }
+
+        const recommendedIdSet = new Set(
+          recommendedIds.filter((id) => inventoryById.has(id))
+        );
+
+        const merged = inventoryListings.map((item) => {
+          const id = getListingId(item);
+          const baseQty = getRawQuantity(item);
+
+          return {
+            ...item,
+            quantity: baseQty,
+            __baseStock: baseQty,
+            aiRecommended: !!(id && recommendedIdSet.has(id)),
+            aiReason: id ? reasonsById.get(id) ?? null : null,
+          };
+        });
+
+        setActiveListings(merged);
       } catch (e) {
         if (e?.name === 'AbortError') return;
         setError(e?.message || 'Failed to load active listings');
@@ -215,14 +350,34 @@ export default function UserHome() {
       }
     };
 
-    loadActiveListings();
+    loadListings();
     return () => controller.abort();
   }, [inventoryServiceUrl, recommendationServiceUrl, user?.id]);
 
+  const stockAdjustedListings = useMemo(() => {
+    return activeListings
+      .map((item) => {
+        const helperRemaining = getRemainingStockForListing(item);
+        const rawQuantity = getRawQuantity(item);
+
+        const remaining =
+          Number.isFinite(helperRemaining) && helperRemaining >= 0
+            ? helperRemaining
+            : rawQuantity;
+
+        return {
+          ...item,
+          remainingQuantity: remaining,
+        };
+      })
+      .filter((item) => Number(item?.remainingQuantity ?? 0) > 0);
+  }, [activeListings, getRemainingStockForListing]);
+
   const visibleListings = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return activeListings;
-    return activeListings.filter((item) => {
+    if (!q) return stockAdjustedListings;
+
+    return stockAdjustedListings.filter((item) => {
       const haystack = [
         getField(item, 'itemName', 'ItemName', 'name', 'Name'),
         getField(item, 'restaurantName', 'RestaurantName'),
@@ -232,9 +387,25 @@ export default function UserHome() {
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
+
       return haystack.includes(q);
     });
-  }, [activeListings, searchQuery]);
+  }, [stockAdjustedListings, searchQuery]);
+
+  const recommendedListings = useMemo(() => {
+    const recs = visibleListings.filter((item) => item?.aiRecommended);
+    return recs.slice(0, MAX_RECOMMENDATIONS);
+  }, [visibleListings]);
+
+  const recommendedIdSet = useMemo(
+    () => new Set(recommendedListings.map((item) => getListingId(item)).filter(Boolean)),
+    [recommendedListings]
+  );
+
+  const regularListings = useMemo(
+    () => visibleListings.filter((item) => !recommendedIdSet.has(getListingId(item))),
+    [visibleListings, recommendedIdSet]
+  );
 
   const handleCardClick = (item) => {
     setSelectedItem(item);
@@ -247,11 +418,80 @@ export default function UserHome() {
     setAddCartError(null);
   }, [selectedItem]);
 
+  const selected = useMemo(() => {
+    if (!selectedItem) return null;
+
+    const remainingQuantity = getRemainingStockForListing(selectedItem);
+    const alreadyInCart = getCartQuantityForListing(selectedItem);
+
+    const itemName = getField(selectedItem, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
+    const description = getField(selectedItem, 'description', 'Description');
+    const cuisineType = getField(selectedItem, 'cuisineType', 'CuisineType');
+    const imageURL = getField(selectedItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
+    const restaurantName = getField(selectedItem, 'restaurantName', 'RestaurantName');
+    const restaurantId = getField(selectedItem, 'restaurantId', 'RestaurantId');
+    const price = Number(getField(selectedItem, 'price', 'Price') ?? 0);
+    const originalPrice = Number(getField(selectedItem, 'originalPrice', 'OriginalPrice') ?? 0);
+    const discount = originalPrice > 0 ? Math.round((1 - price / originalPrice) * 100) : 0;
+    const expiryTimeRaw = getField(selectedItem, 'expiryTime', 'ExpiryTime');
+    const expiryDate = expiryTimeRaw ? new Date(expiryTimeRaw) : null;
+
+    return {
+      itemName,
+      description,
+      cuisineType,
+      imageURL,
+      restaurantName,
+      restaurantId,
+      quantity: Math.max(0, remainingQuantity),
+      alreadyInCart,
+      price: Number.isFinite(price) ? price : 0,
+      originalPrice: Number.isFinite(originalPrice) ? originalPrice : null,
+      discount,
+      expiryDate: expiryDate && !Number.isNaN(expiryDate.getTime()) ? expiryDate : null,
+      aiRecommended: selectedItem?.aiRecommended ?? false,
+      aiReason: selectedItem?.aiReason ?? null,
+    };
+  }, [selectedItem, getRemainingStockForListing, getCartQuantityForListing]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setOrderQty((current) => Math.min(current, selected.quantity));
+  }, [selected]);
+
   const handleAddToCart = async () => {
     if (!selectedItem || !selected) return;
+
     setAddCartError(null);
+
+    if (orderQty < 1) {
+      setAddCartError('Select at least 1 item');
+      return;
+    }
+
+    if (!pickupTime) {
+      setAddCartError('Please select a pickup time');
+      return;
+    }
+
+    if (!canAddToCart(selectedItem, orderQty)) {
+      setAddCartError(
+        selected.quantity <= 0
+          ? 'This listing is sold out'
+          : `You can only add ${selected.quantity} more for this listing`
+      );
+      return;
+    }
+
     try {
-      await addToCart({ item: selectedItem, quantity: orderQty, pickupTime });
+      const payloadItem = {
+        ...selectedItem,
+        quantity: getRawQuantity(selectedItem),
+        __baseStock: getRawQuantity(selectedItem),
+      };
+
+      await addToCart({ item: payloadItem, quantity: orderQty, pickupTime });
+
       setDetailsOpen(false);
       setAddConfirmMessage(`${orderQty} × ${selected.itemName} added to cart`);
       setAddConfirmOpen(true);
@@ -260,48 +500,21 @@ export default function UserHome() {
     }
   };
 
-  const selected = useMemo(() => {
-    if (!selectedItem) return null;
-    const itemName = getField(selectedItem, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
-    const description = getField(selectedItem, 'description', 'Description');
-    const cuisineType = getField(selectedItem, 'cuisineType', 'CuisineType');
-    const imageURL = getField(selectedItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
-    const restaurantName = getField(selectedItem, 'restaurantName', 'RestaurantName');
-    const restaurantId = getField(selectedItem, 'restaurantId', 'RestaurantId');
-    const quantity = Number(getField(selectedItem, 'quantity', 'Quantity') ?? 0);
-    const price = Number(getField(selectedItem, 'price', 'Price') ?? 0);
-    const originalPrice = Number(getField(selectedItem, 'originalPrice', 'OriginalPrice') ?? 0);
-    const discount = originalPrice > 0 ? Math.round((1 - price / originalPrice) * 100) : 0;
-    const expiryTimeRaw = getField(selectedItem, 'expiryTime', 'ExpiryTime');
-    const expiryDate = expiryTimeRaw ? new Date(expiryTimeRaw) : null;
-
-    return {
-      itemName, description, cuisineType, imageURL, restaurantName, restaurantId,
-      quantity: Number.isFinite(quantity) ? quantity : 0,
-      price: Number.isFinite(price) ? price : 0,
-      originalPrice: Number.isFinite(originalPrice) ? originalPrice : null,
-      discount,
-      expiryDate: expiryDate && !Number.isNaN(expiryDate.getTime()) ? expiryDate : null,
-      aiRecommended: selectedItem?.aiRecommended ?? false,
-      aiReason: selectedItem?.aiReason ?? null,
-    };
-  }, [selectedItem]);
-
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-3xl font-bold text-slate-900">Home</h1>
-        <p className="text-slate-600 mt-2">Save the almost thrown away food</p>
+        <h1 className="text-3xl font-bold text-slate-900">Homepage</h1>
+        <p className="mt-2 text-slate-600">Good food, saved in time.</p>
       </div>
 
       <div className="flex flex-col gap-2">
         <div className="relative max-w-xl">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search by item, restaurant, cuisine..."
-            className="w-full rounded-xl border border-input bg-background pl-9 pr-10 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
+            className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
           />
           {searchQuery.trim() && (
             <Button
@@ -316,9 +529,17 @@ export default function UserHome() {
             </Button>
           )}
         </div>
-        {!loading && !error && (
+
+        {!loading && !error && recommendedListings.length > 0 && (
           <p className="text-xs text-muted-foreground">
-            Showing {visibleListings.length} of {activeListings.length}
+            Showing {recommendedListings.length} recommended listing
+            {recommendedListings.length > 1 ? 's' : ''}
+          </p>
+        )}
+
+        {!loading && !error && geminiUsed && geminiReasoning && (
+          <p className="max-w-3xl rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-700">
+            ✨ {geminiReasoning}
           </p>
         )}
       </div>
@@ -329,36 +550,90 @@ export default function UserHome() {
           <span className="text-sm text-muted-foreground">Loading listings...</span>
         </div>
       ) : error ? (
-        <p className="text-red-600 text-sm">{error}</p>
-      ) : activeListings.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No active listings found.</p>
+        <p className="text-sm text-red-600">{error}</p>
+      ) : stockAdjustedListings.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No active listings found.</p>
       ) : visibleListings.length === 0 ? (
-        <p className="text-muted-foreground text-sm">No matches for your search.</p>
+        <p className="text-sm text-muted-foreground">No matches for your search.</p>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {visibleListings.map((item, idx) => {
-            const key = getField(item, 'Id', 'id', 'listingId', 'ListingId') ?? idx;
-            const aiRecommended = item?.aiRecommended ?? false;
-            const aiReason = item?.aiReason ?? null;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => handleCardClick(item)}
-                className="text-left rounded-2xl focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30 hover:-translate-y-0.5 transition-transform"
-                aria-label="Open listing details"
-              >
-                <div className="group">
-                  <ListingCard item={item} aiRecommended={aiRecommended} aiReason={aiReason} />
+        <div className="flex flex-col gap-8">
+          {recommendedListings.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <div>
+                <h2 className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+                  <SparklesIcon className="size-5 text-violet-600" />
+                  Recommended for you
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Personalized picks based on your preferences
+                </p>
+              </div>
+
+              <div className="overflow-x-auto pb-2">
+                <div className="flex min-w-max gap-4">
+                  {recommendedListings.map((item, idx) => {
+                    const key = getListingId(item) ?? `rec-${idx}`;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => handleCardClick(item)}
+                        className="w-[280px] shrink-0 rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30 sm:w-[300px]"
+                      >
+                        <div className="group h-full">
+                          <ListingCard
+                            item={item}
+                            aiRecommended={true}
+                            aiReason={item?.aiReason ?? null}
+                            isFavorited={isFavorite(item)}
+                            onToggleFavorite={toggleFavorite}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
-              </button>
-            );
-          })}
+              </div>
+            </section>
+          )}
+
+          <section className="flex flex-col gap-3">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">All listings</h2>
+              <p className="text-sm text-muted-foreground">Browse all available food listings</p>
+            </div>
+
+            {regularListings.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No general listings match your search.</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {regularListings.map((item, idx) => {
+                  const key = getListingId(item) ?? `all-${idx}`;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => handleCardClick(item)}
+                      className="rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+                    >
+                      <div className="group">
+                        <ListingCard
+                          item={item}
+                          isFavorited={isFavorite(item)}
+                          onToggleFavorite={toggleFavorite}
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </div>
       )}
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="sm:max-w-[420px] p-0 overflow-hidden rounded-3xl">
+        <DialogContent className="overflow-hidden rounded-3xl p-0 sm:max-w-[420px]">
           {selected ? (
             <div className="bg-background">
               <div className="flex items-center justify-between px-4 pt-4">
@@ -371,82 +646,67 @@ export default function UserHome() {
                 >
                   <ChevronLeftIcon className="size-4" />
                 </Button>
-                <p className="text-sm font-semibold text-foreground truncate max-w-[240px]">
+
+                <p className="flex-1 truncate px-2 text-center text-sm font-semibold text-foreground">
                   {selected.restaurantName ?? selected.restaurantId ?? 'Restaurant'}
                 </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Favorite"
-                  disabled
-                  title="Favorites coming soon"
-                >
-                  <HeartIcon className="size-4" />
-                </Button>
+
+                <div className="w-8" />
               </div>
 
               <div className="px-6 pt-4">
-                <div className="mx-auto size-44 sm:size-52 rounded-3xl bg-muted/40 ring-1 ring-border flex items-center justify-center overflow-hidden relative">
+                <div className="relative mx-auto flex size-44 items-center justify-center overflow-hidden rounded-3xl bg-muted/40 ring-1 ring-border sm:size-52">
                   <img
-                    src={selected.imageURL || "/logo.png"}
+                    src={selected.imageURL || '/logo.png'}
                     alt={selected.itemName}
-                    className={selected.imageURL ? "h-full w-full object-cover" : "h-full w-full object-contain p-8"}
+                    className={
+                      selected.imageURL
+                        ? 'h-full w-full object-cover'
+                        : 'h-full w-full object-contain p-8'
+                    }
                     loading="lazy"
                   />
-                  {selected.aiRecommended && (
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Badge className="absolute top-2 right-2 flex items-center gap-1 bg-violet-600 hover:bg-violet-700 text-white text-[11px] px-2 py-0.5 rounded-full shadow-md cursor-default">
-                            <SparklesIcon className="size-3" />
-                            AI Pick
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom" className="max-w-[180px] text-center">
-                          ✨ {selected.aiReason || "Recommended for you"}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  )}
                 </div>
               </div>
 
               <div className="px-6 pt-4">
                 <div className="flex items-start justify-between gap-3">
                   <h2 className="text-xl font-semibold leading-tight">{selected.itemName}</h2>
-                  {selected.cuisineType ? (
-                    <span className="mt-0.5 inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground whitespace-nowrap">
+                  {selected.cuisineType && (
+                    <span className="mt-0.5 inline-flex items-center whitespace-nowrap rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
                       {selected.cuisineType}
                     </span>
-                  ) : null}
+                  )}
                 </div>
               </div>
 
               <div className="px-6 pt-4">
-                <p className="text-sm text-muted-foreground leading-relaxed">
+                <p className="text-sm leading-relaxed text-muted-foreground">
                   {selected.description || 'No description provided.'}
                 </p>
               </div>
 
               <div className="px-6 pt-4">
                 <div className="grid grid-cols-3 gap-3 text-center">
-                  <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
                     <p className="text-sm font-semibold text-foreground">${selected.price.toFixed(2)}</p>
                     <p className="mt-1 text-[11px] text-muted-foreground">Price</p>
                   </div>
-                  <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
                     <p className="text-sm font-semibold text-foreground">{selected.quantity}</p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">Quantity</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">Available</p>
                   </div>
-                  <div className="rounded-2xl bg-muted/30 ring-1 ring-border px-3 py-3">
+                  <div className="rounded-2xl bg-muted/30 px-3 py-3 ring-1 ring-border">
                     {selected.expiryDate ? (
                       <>
                         <p className="text-sm font-semibold text-foreground">
                           {selected.expiryDate.toLocaleDateString()}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
-                          {selected.expiryDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {selected.expiryDate.toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
                         </p>
                       </>
                     ) : (
@@ -457,7 +717,13 @@ export default function UserHome() {
                 </div>
               </div>
 
-              <div className="px-6 pt-5 pb-24">
+              <div className="px-6 pt-4">
+                <p className="text-[11px] text-muted-foreground">
+                  Already in cart: {selected.alreadyInCart}
+                </p>
+              </div>
+
+              <div className="px-6 pb-24 pt-5">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-2">
                     <p className="text-xs font-medium text-muted-foreground">Choose quantity</p>
@@ -468,7 +734,6 @@ export default function UserHome() {
                         size="icon-sm"
                         onClick={() => setOrderQty((q) => Math.max(0, q - 1))}
                         disabled={orderQty <= 0}
-                        aria-label="Decrease quantity"
                       >
                         <MinusIcon className="size-4" />
                       </Button>
@@ -477,19 +742,14 @@ export default function UserHome() {
                         type="button"
                         variant="outline"
                         size="icon-sm"
-                        onClick={() =>
-                          setOrderQty((q) =>
-                            selected.quantity > 0 ? Math.min(selected.quantity, q + 1) : q + 1
-                          )
-                        }
-                        disabled={selected.quantity > 0 ? orderQty >= selected.quantity : false}
-                        aria-label="Increase quantity"
+                        onClick={() => setOrderQty((q) => Math.min(selected.quantity, q + 1))}
+                        disabled={selected.quantity <= 0 || orderQty >= selected.quantity}
                       >
                         <PlusIcon className="size-4" />
                       </Button>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      {selected.quantity > 0 ? `${selected.quantity} left` : 'In stock'}
+                      {selected.quantity > 0 ? `${selected.quantity} more can be added` : 'Sold out'}
                     </p>
                   </div>
 
@@ -506,21 +766,20 @@ export default function UserHome() {
                 </div>
               </div>
 
-              <div className="absolute inset-x-0 bottom-0 p-4 bg-background/80 supports-backdrop-filter:backdrop-blur border-t border-border">
+              <div className="absolute inset-x-0 bottom-0 border-t border-border bg-background/80 p-4 supports-backdrop-filter:backdrop-blur">
                 {addCartError && (
-                  <div className="mb-3 text-xs text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl px-3 py-2">
+                  <div className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-red-200">
                     {addCartError}
                   </div>
                 )}
                 <div className="flex items-center gap-3">
                   <Button
                     type="button"
-                    className="flex-1 rounded-2xl h-11"
-                    disabled={orderQty < 1 || !pickupTime}
-                    title={orderQty < 1 ? 'Select quantity' : !pickupTime ? 'Select pickup time' : undefined}
+                    className="h-11 flex-1 rounded-2xl"
+                    disabled={orderQty < 1 || !pickupTime || !canAddToCart(selectedItem, orderQty)}
                     onClick={handleAddToCart}
                   >
-                    Add to cart
+                    {selected.quantity <= 0 ? 'Sold out' : 'Add to cart'}
                   </Button>
                   <div className="text-right">
                     <p className="text-[11px] text-muted-foreground">Total</p>
@@ -550,7 +809,13 @@ export default function UserHome() {
             <Button type="button" variant="outline" onClick={() => setAddConfirmOpen(false)}>
               Continue
             </Button>
-            <Button type="button" onClick={() => { setAddConfirmOpen(false); navigate('/cart'); }}>
+            <Button
+              type="button"
+              onClick={() => {
+                setAddConfirmOpen(false);
+                navigate('/cart');
+              }}
+            >
               View cart
             </Button>
           </div>

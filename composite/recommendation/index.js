@@ -183,7 +183,7 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
     console.log("Gemini hit! ordered IDs:", orderedIds);
     return {
       used: true,
-      reasoning: `Gemini ranked ${orderedIds.length} listings based on your order history signals.`,
+      reasoning: `Gemini ranked up to ${orderedIds.length} listings based on your order history signals.`,
       orderedIds
     };
   } catch (err) {
