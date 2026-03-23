@@ -31,6 +31,16 @@ Endpoints:
 - Kong (API gateway): `http://localhost:8000`
 - RabbitMQ UI: `http://localhost:15672` (guest/guest)
 
+## Recommendations cache
+
+The recommendation service caches Gemini rankings for ~5 minutes. To force-refresh during development, call:
+
+```sh
+curl "http://localhost:4000/recommendations/<userId>?noCache=true"
+```
+
+Or set `DISABLE_GEMINI_CACHE=true` in `composite/recommendation/.env` and restart the container.
+
 ## Stripe webhooks (local)
 
 Keep Stripe CLI on your host (not in Docker) and forward to the payment container:
@@ -40,4 +50,3 @@ stripe listen --forward-to http://localhost:3003/payments/webhook
 ```
 
 Make sure `STRIPE_WEBHOOK_SECRET` in `services/payment/.env` matches the `whsec_...` shown by `stripe listen`.
-

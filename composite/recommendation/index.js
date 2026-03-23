@@ -41,6 +41,24 @@ function normalizeCsv(value) {
   return String(value).split(",").map((v) => v.trim()).filter(Boolean);
 }
 
+function stableSignalsKey(topNames, topCategories) {
+  const names = (topNames || [])
+    .map((n) => `${n?.name || ""}:${Number(n?.count || 0)}`)
+    .join("|");
+  const categories = (topCategories || [])
+    .map((c) => `${c?.category || ""}:${Number(c?.count || 0)}`)
+    .join("|");
+  return `${names}__${categories}`;
+}
+
+function shouldBypassCache(req) {
+  const q = req?.query || {};
+  return (
+    parseBool(q.noCache ?? q.nocache ?? q.refresh ?? q.reload, false) ||
+    parseBool(process.env.DISABLE_GEMINI_CACHE, false)
+  );
+}
+
 async function readBody(response) {
   const contentType = response.headers.get("content-type") || "";
   const raw = await response.text();
@@ -266,8 +284,10 @@ app.get("/recommendations/:userId", async (req, res) => {
     : [];
 
   // Step 4 — Gemini reranking (with cache)
-  const cacheKey = userId;
-  const cached = geminiCache.get(cacheKey);
+  const bypassCache = shouldBypassCache(req);
+  const signalsKey = stableSignalsKey(topNames, topCategories);
+  const cacheKey = `${userId}::${stampsCount}::${signalsKey}::${requestedListingIds.join(",") || "*"}`;
+  const cached = bypassCache ? null : geminiCache.get(cacheKey);
   let gemini;
 
   if (cached && cached.expiresAt > Date.now()) {
@@ -275,7 +295,9 @@ app.get("/recommendations/:userId", async (req, res) => {
     gemini = cached.result;
   } else {
     gemini = await callGemini(topNames, topCategories, filteredListings);
-    geminiCache.set(cacheKey, { result: gemini, expiresAt: Date.now() + GEMINI_CACHE_TTL_MS });
+    if (!bypassCache) {
+      geminiCache.set(cacheKey, { result: gemini, expiresAt: Date.now() + GEMINI_CACHE_TTL_MS });
+    }
   }
 
   let recommended = [];
