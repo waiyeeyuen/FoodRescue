@@ -9,7 +9,5 @@
 
 **/.env
 .env*
-composite/recommendation/.env
-services/inventory/.env
-composite/recommendation/.env
-services/notification/.env
+composite/*/.env
+services/*/.env
