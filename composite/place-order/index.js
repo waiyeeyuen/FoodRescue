@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 4001;
 const PAYMENT_SERVICE_URL     = process.env.PAYMENT_SERVICE_URL     || "http://localhost:3003";
 const ORDER_SERVICE_URL        = process.env.ORDER_SERVICE_URL        || "http://localhost:3004";
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
+const INVENTORY_SERVICE_URL    = process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
 
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
   .split(",").map((v) => v.trim()).filter(Boolean);
@@ -48,6 +49,32 @@ function fireAndForget(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).catch((err) => console.warn(`[fire-and-forget] ${url} failed:`, err.message));
+}
+
+// Decrement OutSystems inventory for confirmed items — fire-and-forget
+function decrementOutSystemsInventory(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+
+  items.forEach((item) => {
+    const itemId = item?.itemId || item?.listingId || item?.id;
+    const boughtQuantity = Number(item?.quantity) || 1;
+    
+    if (!itemId) {
+      console.warn(`[place-order] ⚠️ Skipping decrement — missing itemId for:`, item.name);
+      return;
+    }
+
+    const url = `${INVENTORY_SERVICE_URL}/DecrementListingCount?itemId=${encodeURIComponent(itemId)}&boughtQuantity=${boughtQuantity}`;
+    fetch(url, { method: "PUT" })
+      .then((res) => {
+        if (!res.ok) {
+          console.warn(`[place-order] ⚠️ Inventory decrement failed (${res.status}) for itemId: ${itemId}, quantity: ${boughtQuantity}`);
+        } else {
+          console.log(`[place-order] ✅ Inventory inventory decremented for itemId: ${itemId}, quantity: ${boughtQuantity}`);
+        }
+      })
+      .catch((err) => console.warn(`[place-order] ⚠️ Inventory decrement error for itemId ${itemId}:`, err.message));
+  });
 }
 
 function toMinorUnits(value) {
@@ -172,7 +199,7 @@ app.post("/orders/inventory-result", async (req, res) => {
   } = req.body || {};
 
   console.log(`[place-order] 📦 Inventory result received for order ${orderId} — status: ${status}`);
-  console.log(`[place-order] Payload:`, JSON.stringify(req.body, null, 2));
+  console.log(`[place-order] Payload:`, JSON.stringify(req.body, null, 2)); 
 
   if (!orderId || !paymentId || !userId || !status) {
     return res.status(400).json({ error: "orderId, paymentId, userId, and status are required" });
@@ -202,6 +229,11 @@ app.post("/orders/inventory-result", async (req, res) => {
       });
       console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
 
+      // Decrement inventory in Inventory Service
+      console.log(`[place-order] ✅ print confirmed items for inventory decrement:`, confirmedItems);
+      console.log(`[place-order] test inventory link: ${INVENTORY_SERVICE_URL}`);
+      decrementOutSystemsInventory(confirmedItems);
+
       // Step 9 — Log payment details to Payment Service
       try {
         await fetchJson(`${PAYMENT_SERVICE_URL}/payments/log`, {
@@ -219,7 +251,7 @@ app.post("/orders/inventory-result", async (req, res) => {
         console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, err.message);
       }
 
-      // Step 11 — Fire-and-forget notification
+      // Step 10 — Fire-and-forget notification
       fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
         userId,
         type: "ORDER_CONFIRMED",

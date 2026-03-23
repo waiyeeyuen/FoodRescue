@@ -43,8 +43,13 @@ async function processMessage(payload) {
     const availableQty = Number(listing?.quantity ?? listing?.Quantity ?? 0);
     console.log(`[Consumer] OutSystems result for "${itemName}":`, listing ? `found, qty=${availableQty}` : 'NOT FOUND');
 
+    const resolvedItemId =
+      item?.itemId || item?.listingId || item?.id || listing?.Id || listing?.id;
+
     if (!listing || availableQty < requestedQty) {
       insufficientItems.push({
+        ...item,
+        itemId: resolvedItemId,
         name: itemName,
         requestedQty,
         availableQty: listing ? availableQty : 0,
@@ -53,8 +58,11 @@ async function processMessage(payload) {
       refundAmount += unitAmountMinor * requestedQty;
       console.log(`[Consumer] ❌ Insufficient: "${itemName}"`);
     } else {
-      confirmedItems.push(item);
-      console.log(`[Consumer] ✅ Stock OK: "${itemName}"`);
+      confirmedItems.push({
+        ...item,
+        itemId: resolvedItemId,
+      });
+      console.log(`[Consumer] ✅ Stock OK: "${itemName}" (itemId=${resolvedItemId})`);
     }
   }
 

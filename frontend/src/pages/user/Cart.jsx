@@ -184,6 +184,24 @@ export default function UserCart() {
         throw new Error('Missing checkoutUrl from payment service');
       }
 
+      // Persist backend IDs so payment-success has stable references.
+      try {
+        const raw = sessionStorage.getItem('pending_checkout');
+        const pending = raw ? JSON.parse(raw) : null;
+        if (pending && typeof pending === 'object') {
+          sessionStorage.setItem(
+            'pending_checkout',
+            JSON.stringify({
+              ...pending,
+              orderId: data?.orderId || pending.orderId,
+              paymentId: data?.payment?.paymentId || pending.paymentId,
+            })
+          );
+        }
+      } catch {
+        // Non-fatal
+      }
+
       window.location.href = checkoutUrl;
     } catch (e) {
       setCheckoutError(e?.message || 'Checkout failed');

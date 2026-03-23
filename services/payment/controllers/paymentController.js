@@ -177,6 +177,76 @@ export async function logPayment(req, res) {
   }
 }
 
+async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord }) {
+  if (!paymentId || !orderId || !paymentRecord) return { published: false, reason: 'missing_data' };
+
+  if (paymentRecord.stockCheckPublishedAt || paymentRecord.stockCheckPublished) {
+    console.log('[Payment] Stock check already published for paymentId:', paymentId);
+    return { published: false, reason: 'already_published' };
+  }
+
+  const queuePayload = {
+    orderId,
+    paymentId,
+    userId,
+    currency: paymentRecord.currency || 'sgd',
+    amountTotal: paymentRecord.amountTotal,
+    items: paymentRecord.items,
+  };
+
+  console.log('[Payment] Publishing stock check to queue:', JSON.stringify(queuePayload, null, 2));
+  await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+
+  await createOrUpdatePayment(paymentId, {
+    stockCheckPublished: true,
+    stockCheckPublishedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { published: true };
+}
+
+export async function confirmCheckoutSession(req, res) {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.payment_status !== 'paid') {
+      return res.status(409).json({
+        error: 'Payment not completed yet',
+        payment_status: session.payment_status,
+        status: session.status,
+      });
+    }
+
+    const paymentId = session.metadata?.paymentId;
+    const orderId = session.metadata?.orderId;
+    const userId = session.metadata?.userId;
+
+    if (!paymentId || !orderId) {
+      return res.status(400).json({ error: 'Missing paymentId/orderId in Stripe session metadata' });
+    }
+
+    await createOrUpdatePayment(paymentId, {
+      webhookEventType: 'confirm-session',
+      status: 'paid',
+      stripeSessionId: session.id,
+      stripePaymentIntentId: session.payment_intent || null,
+    });
+
+    const paymentRecord = await retryGetPayment(paymentId);
+    const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord });
+
+    return res.json({ success: true, paymentId, orderId, ...result });
+  } catch (error) {
+    console.error('[Payment] ❌ confirmCheckoutSession error:', error);
+    return res.status(500).json({ error: 'Failed to confirm checkout session', details: error?.message || String(error) });
+  }
+}
+
 export async function handleStripeWebhook(req, res) {
   const signature = req.headers["stripe-signature"];
   let event;
@@ -221,22 +291,17 @@ export async function handleStripeWebhook(req, res) {
         console.log('[Webhook] Payment record fetched:', JSON.stringify(paymentRecord, null, 2));
 
         if (orderId && paymentRecord) {
-          const queuePayload = {
-            orderId,
-            paymentId,
-            userId,
-            currency: paymentRecord.currency || 'sgd',
-            amountTotal: paymentRecord.amountTotal,
-            items: paymentRecord.items,
-          };
-          console.log('[Webhook] Publishing to queue:', JSON.stringify(queuePayload, null, 2));
           try {
-            await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+            const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord });
+            if (result.published) {
+              console.log('[Webhook] ✅ Published stock check to RabbitMQ');
+            } else {
+              console.log('[Webhook] ℹ️ Skipped stock check publish:', result.reason);
+            }
           } catch (err) {
             console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
             throw err;
           }
-          console.log('[Webhook] ✅ Published to RabbitMQ');
         } else {
           console.log('[Webhook] ❌ Skipped RabbitMQ publish');
           console.log('[Webhook]    orderId:', orderId);

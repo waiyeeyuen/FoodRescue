@@ -109,6 +109,8 @@ export default function PaymentSuccessPage() {
   const [message, setMessage] = useState('Finalising your order...');
 
   const sessionId = searchParams.get('session_id');
+  const paymentServiceUrl =
+    import.meta.env.VITE_PAYMENT_SERVICE_URL || 'http://localhost:3003';
   const orderServiceUrl =
     import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
 
@@ -174,19 +176,23 @@ export default function PaymentSuccessPage() {
         const orderId =
           pending?.orderId || pending?.sessionId || sessionId || `ORD-${Date.now()}`;
 
+        // Trigger backend pipeline (payment → stock check → place-order → OutSystems decrement)
+        // even when Stripe webhooks aren’t running locally.
+        if (sessionId) {
+          const confirmRes = await fetch(`${paymentServiceUrl}/payments/confirm-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+
+          if (!confirmRes.ok) {
+            const errorMessage = await readErrorMessage(confirmRes, 'Failed to confirm payment');
+            throw new Error(errorMessage);
+          }
+        }
+
         if (items.length > 0) {
           await addOrdersFromCart({ items, pickupTime, orderId });
-
-          try {
-            await sendOrderToBackend({
-              userId: user?.id,
-              items,
-              orderId,
-              pickupTime,
-            });
-          } catch (err) {
-            console.error('Failed to sync order to backend:', err);
-          }
         }
 
         await clearCart().catch((err) => {
@@ -209,7 +215,7 @@ export default function PaymentSuccessPage() {
     }
 
     finalizePayment();
-  }, [sessionId, user?.id, addOrdersFromCart, clearCart, orderServiceUrl]);
+  }, [sessionId, user?.id, addOrdersFromCart, clearCart, paymentServiceUrl, orderServiceUrl]);
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-4">
