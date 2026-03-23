@@ -230,7 +230,12 @@ export async function handleStripeWebhook(req, res) {
             items: paymentRecord.items,
           };
           console.log('[Webhook] Publishing to queue:', JSON.stringify(queuePayload, null, 2));
-          await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+          try {
+            await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+          } catch (err) {
+            console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
+            throw err;
+          }
           console.log('[Webhook] ✅ Published to RabbitMQ');
         } else {
           console.log('[Webhook] ❌ Skipped RabbitMQ publish');
@@ -283,7 +288,7 @@ export async function handleStripeWebhook(req, res) {
 
     res.json({ received: true });
   } catch (error) {
-    console.error('[Webhook] ❌ Handler error:', error.message);
-    res.status(500).json({ error: "Webhook handling failed" });
+    console.error('[Webhook] ❌ Handler error:', error);
+    res.status(500).json({ error: "Webhook handling failed", details: error?.message || String(error) });
   }
 }
