@@ -22,14 +22,21 @@ function getField(item, ...keys) {
 
 function toImageSrc(value) {
   if (!value) return null;
+
   const raw = String(value).trim();
-  if (!raw) return null;
 
-  // ✅ S3 or any full URL
-  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
-  return null;
+  let finalUrl;
+
+  if (raw.startsWith('http')) {
+    finalUrl = raw;
+  } else {
+    finalUrl = `https://${import.meta.env.VITE_S3_BUCKET}.s3.${import.meta.env.VITE_AWS_REGION}.amazonaws.com/${raw}`;
+  }
+
+  console.log("IMAGE URL:", finalUrl);
+
+  return finalUrl;
 }
-
 function parseExpiryToMs(item) {
   const raw = getField(item, 'expiryTime', 'ExpiryTime');
   if (raw === undefined || raw === null) return null;
@@ -122,37 +129,46 @@ export default function RestaurantListings() {
   }, [user?.restaurantName]);
 
   const fetchListings = async (signal, { showLoading = true } = {}) => {
-    if (!restaurantId) return;
-    try {
-      if (showLoading) setLoading(true);
-      setError(null);
-      const res = await fetch(
-        `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
-        { signal }
-      );
-      if (!res.ok) {
-        let message = 'Failed to load listings';
-        try {
-          const body = await readResponseBody(res);
-          if (typeof body === 'string') {
-            message = body || message;
-          } else {
-            message = body?.error || message;
-          }
-        } catch {
-          // ignore
-        }
-        throw new Error(message);
+  if (!restaurantId) return;
+
+  try {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    console.log("📡 Fetching listings for restaurantId:", restaurantId);
+
+    const res = await fetch(
+      `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
+      { signal }
+    );
+
+    console.log("📡 Response status:", res.status);
+
+    const data = await readResponseBody(res);
+
+    console.log("🔥 RAW LISTINGS FROM BACKEND:", data);
+
+    if (!res.ok) {
+      let message = 'Failed to load listings';
+      if (typeof data === 'string') {
+        message = data || message;
+      } else {
+        message = data?.error || message;
       }
-      const data = await readResponseBody(res);
-      setListings(Array.isArray(data) ? data : []);
-    } catch (e) {
-      if (e?.name === 'AbortError') return;
-      setError(e?.message || 'Failed to load listings');
-    } finally {
-      if (showLoading) setLoading(false);
+      throw new Error(message);
     }
-  };
+
+    console.log("✅ Setting listings:", data);
+
+    setListings(Array.isArray(data) ? data : []);
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+    console.error("❌ fetchListings error:", e);
+    setError(e?.message || 'Failed to load listings');
+  } finally {
+    if (showLoading) setLoading(false);
+  }
+};
 
   useEffect(() => {
     let activeController = null;
@@ -265,8 +281,7 @@ export default function RestaurantListings() {
       }
 
       const imageUrl = typeof body === 'string' ? body : body?.url;
-      const imageRef = typeof body === 'string' ? null : body?.imageRef || body?.publicId;
-      const storedImageValue = imageRef || imageUrl;
+      const storedImageValue = typeof body === 'string' ? body : body?.key;
       if (!storedImageValue) {
         throw new Error('Upload succeeded but no image reference was returned');
       }
@@ -281,81 +296,78 @@ export default function RestaurantListings() {
   };
 
   const onCreate = async (e) => {
-    e.preventDefault();
-    if (!restaurantId) {
-      setCreateError('Missing restaurant id');
-      return;
+  e.preventDefault();
+
+  if (!restaurantId) {
+    setCreateError('Missing restaurant id');
+    return;
+  }
+
+  setCreating(true);
+  setCreateError(null);
+
+  try {
+    const payload = {
+      restaurantId,
+      restaurantName: form.restaurantName.trim(),
+      itemName: form.itemName.trim(),
+      description: form.description.trim(),
+      expiryTime: new Date(form.expiryLocal).toISOString(),
+      price: Number(form.price),
+      originalPrice: form.originalPrice === '' ? null : Number(form.originalPrice),
+      quantity: Number(form.quantity),
+      imageURL: form.imageURL.trim(),
+      cuisineType: form.cuisineType.trim(),
+    };
+
+    console.log("🚀 CREATING LISTING PAYLOAD:", payload);
+
+    const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    console.log("📡 Create response status:", res.status);
+
+    const body = await readResponseBody(res);
+
+    console.log("📦 Create response body:", body);
+
+    if (!res.ok) {
+      throw new Error(
+        typeof body === 'string' ? body : body?.error || 'Failed to create listing'
+      );
     }
 
-    setCreating(true);
-    setCreateError(null);
-    try {
-      const expiryMs = new Date(form.expiryLocal).getTime();
-      if (!Number.isFinite(expiryMs)) throw new Error('Invalid expiry time');
+    console.log("✅ Listing created successfully");
 
-      const parsedPrice = Number(form.price);
-      const parsedQuantity = Number(form.quantity);
-      const parsedOriginalPrice = form.originalPrice === '' ? null : Number(form.originalPrice);
-      if (!Number.isFinite(parsedPrice) || !Number.isFinite(parsedQuantity)) {
-        throw new Error('Price and quantity must be valid numbers');
-      }
-      if (parsedOriginalPrice !== null && !Number.isFinite(parsedOriginalPrice)) {
-        throw new Error('Original price must be a valid number');
-      }
+    // ✅ reset form AFTER success
+    setForm((f) => ({
+      ...f,
+      itemName: '',
+      description: '',
+      price: '',
+      originalPrice: '',
+      quantity: '',
+      imageURL: '',
+      cuisineType: '',
+    }));
 
-      const payload = {
-        restaurantId,
-        restaurantName: form.restaurantName.trim(),
-        itemName: form.itemName.trim(),
-        description: form.description.trim(),
-        expiryTime: new Date(form.expiryLocal).toISOString(),
-        price: parsedPrice,
-        originalPrice: parsedOriginalPrice,
-        quantity: parsedQuantity,
-        imageURL: form.imageURL.trim(),
-        cuisineType: form.cuisineType.trim(),
-      };
+    setUploadPreviewUrl('');
 
-      const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+    // ✅ refetch listings
+    await fetchListings();
 
-      if (!res.ok) {
-        let message = 'Failed to create listing';
-        try {
-          const body = await readResponseBody(res);
-          if (typeof body === 'string') {
-            message = body || message;
-          } else {
-            message = body?.error || message;
-          }
-        } catch {
-          // ignore
-        }
-        throw new Error(message);
-      }
+    setCreateOpen(false);
 
-      setForm((f) => ({
-        ...f,
-        itemName: '',
-        description: '',
-        price: '',
-        originalPrice: '',
-        quantity: '',
-        imageURL: '',
-        cuisineType: '',
-      }));
-      setUploadPreviewUrl('');
-      await fetchListings();
-      setCreateOpen(false);
-    } catch (e2) {
-      setCreateError(e2?.message || 'Failed to create listing');
-    } finally {
-      setCreating(false);
-    }
-  };
+  } catch (e) {
+    console.error("❌ Create listing error:", e);
+    setCreateError(e?.message || 'Failed to create listing');
+  } finally {
+    setCreating(false);
+  }
+};
 
   return (
     <div className="flex flex-col gap-6">

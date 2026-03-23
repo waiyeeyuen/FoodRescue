@@ -91,72 +91,87 @@ async function createListing(req, res) {
       cuisineType,
     } = req.body || {};
 
-    // Basic validation
-    // if (!restaurantId || !restaurantName || !itemName) {
-    //   return res.status(400).json({ error: 'restaurantId, restaurantName, itemName are required' });
-    // }
-    if (price === undefined || price === null || Number.isNaN(Number(price))) {
-      return res.status(400).json({ error: 'price is required' });
-    }
-    if (quantity === undefined || quantity === null || Number.isNaN(Number(quantity))) {
-      return res.status(400).json({ error: 'quantity is required' });
-    }
-    if (!expiryTime) {
-      return res.status(400).json({ error: 'expiryTime is required' });
-    }
+    console.log(" Incoming Listing request:");
+    console.log({
+      restaurantId,
+      restaurantName,
+      itemName,
+      price,
+      quantity,
+      expiryTime,
+      imageURL,
+    });
 
-    const normalizedRestaurantName = String(restaurantName).trim();
-    const normalizedItemName = String(itemName).trim();
-    const normalizedExpiryTime = String(expiryTime).trim();
-    const normalizedDescription = description === undefined || description === null ? '' : String(description);
+    const normalizedImageRef = imageURL
+  ? imageURL.split('/').pop()
+  : '';
 
-    if (!normalizedRestaurantName || !normalizedItemName || !normalizedExpiryTime) {
-      return res.status(400).json({ error: 'restaurantName, itemName, expiryTime must be non-empty' });
-    }
-
-    const normalizedImageRef = imageURL || ''
+    console.log("Normalized imageURL:", normalizedImageRef);
 
     const params = new URLSearchParams({
       restaurantId: String(restaurantId),
-      restaurantName: normalizedRestaurantName,
-      itemName: normalizedItemName,
-      description: normalizedDescription,
+      restaurantName: String(restaurantName).trim(),
+      itemName: String(itemName).trim(),
+      description: description ?? '',
       price: String(Number(price)),
-      originalPrice: originalPrice != null && originalPrice !== '' ? String(Number(originalPrice)) : '',
+      originalPrice: originalPrice != null ? String(Number(originalPrice)) : '',
       quantity: String(Number(quantity)),
-      expiryTime: normalizedExpiryTime, // e.g. "2026-03-31T23:59:59.938Z"
+      expiryTime: String(expiryTime),
       imageURL: normalizedImageRef,
       cuisineType: cuisineType ?? '',
     });
 
     const url = `${OUTSYSTEMS_BASE}/CreateListing?${params.toString()}`;
 
+    console.log("OutSystems URL:", url);
+
     const attempts = [];
+
     const tryRequest = async (method) => {
+      console.log(`Trying ${method} request to OutSystems...`);
+
       const response = await fetch(url, {
         method,
         headers: { Accept: 'application/json' },
       });
+
       const data = await readOutsystemsBody(response);
-      attempts.push({ method, status: response.status, url, data });
+
+      console.log(`OutSystems ${method} response:`, {
+        status: response.status,
+        data,
+      });
+
+      attempts.push({ method, status: response.status, data });
+
       return { response, data };
     };
 
-    // OutSystems example uses query params; try GET first.
     {
       const { response, data } = await tryRequest('GET');
-      if (response.ok) return res.status(201).json(data);
+      if (response.ok) {
+        console.log("GET succeeded");
+        return res.status(201).json(data);
+      }
     }
+
     {
       const { response, data } = await tryRequest('POST');
-      if (response.ok) return res.status(201).json(data);
+      if (response.ok) {
+        console.log("POST succeeded");
+        return res.status(201).json(data);
+      }
     }
+
+    console.error("OutSystems failed:", attempts);
 
     return res.status(502).json({
       error: 'OutSystems CreateListing failed',
       attempts,
     });
+
   } catch (err) {
+    console.error("Backend error:", err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -189,8 +204,9 @@ app.post('/inventory/upload-image', upload.single('image'), async (req, res) => 
     const imageUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
 
     return res.status(201).json({
-      url: imageUrl,
-    });
+  key: fileName,  
+  url: `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`, // for preview only
+});
 
   } catch (err) {
     return res.status(500).json({ error: err.message });

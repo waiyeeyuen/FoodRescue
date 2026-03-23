@@ -216,5 +216,7 @@ services:
       VITE_PLACE_ORDER_SERVICE_URL: http://localhost:8000
       VITE_RECOMMENDATION_SERVICE_URL: http://localhost:8000
       VITE_ORDER_SERVICE_URL: http://localhost:8000
+      VITE_S3_BUCKET: foodrescue-listing-292659698564-ap-southeast-1-an
+      VITE_AWS_REGION: ap-southeast-1
     depends_on:
       - kong
