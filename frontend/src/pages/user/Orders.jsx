@@ -11,12 +11,35 @@ function getField(item, ...keys) {
   return undefined;
 }
 
+// ✅ ADDED (only new function)
+function toImageSrc(value) {
+  if (!value) return null;
+
+  let raw = String(value).trim();
+
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {}
+
+  if (raw.startsWith("http")) return raw;
+
+  const bucket = import.meta.env.VITE_S3_BUCKET;
+  const region = import.meta.env.VITE_AWS_REGION;
+
+  if (!bucket || !region) return null;
+
+  const key = raw.startsWith("foods/") ? raw : `foods/${raw}`;
+
+  return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+}
+
 function OrderCard({ order }) {
   const item = order?.item || {};
   const itemName = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
   const description = getField(item, 'description', 'Description');
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
   const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
+  const imageSrc = toImageSrc(imageURL); // ✅ ADDED
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
   const restaurantId = getField(item, 'restaurantId', 'RestaurantId');
   const price = Number(getField(item, 'price', 'Price') ?? 0);
@@ -33,9 +56,9 @@ function OrderCard({ order }) {
     <div className="flex h-full flex-col overflow-hidden rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border">
       <div className="relative">
         <img
-          src={imageURL || '/logo.png'}
+          src={imageSrc || '/logo.png'} // ✅ FIXED
           alt={itemName}
-          className={`h-44 w-full ${imageURL ? 'object-cover' : 'object-contain bg-muted p-8'}`}
+          className={`h-44 w-full ${imageSrc ? 'object-cover' : 'object-contain bg-muted p-8'}`} // ✅ FIXED
           loading="lazy"
         />
 

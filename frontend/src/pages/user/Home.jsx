@@ -55,6 +55,29 @@ function getRawQuantity(item) {
   );
   return Number.isFinite(value) ? value : 0;
 }
+function toImageSrc(value) {
+  if (!value) return null;
+
+  let raw = String(value).trim();
+
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {}
+
+  if (raw.startsWith("http")) return raw;
+
+  const bucket = import.meta.env.VITE_S3_BUCKET;
+  const region = import.meta.env.VITE_AWS_REGION;
+
+  if (!bucket || !region) {
+    console.warn("Missing S3 env config");
+    return null;
+  }
+
+  const key = raw.startsWith("foods/") ? raw : `foods/${raw}`;
+
+  return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+}
 
 function ListingCard({
   item,
@@ -68,7 +91,7 @@ function ListingCard({
   const cuisineType = getField(item, 'cuisineType', 'CuisineType');
   const imageURL = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
   const restaurantName = getField(item, 'restaurantName', 'RestaurantName');
-
+  const imageSrc = toImageSrc(imageURL);
   const remainingQuantity = Number(item?.remainingQuantity ?? getRawQuantity(item));
   const price = Number(getField(item, 'price', 'Price') ?? 0);
   const originalPrice = Number(getField(item, 'originalPrice', 'OriginalPrice') ?? 0);
@@ -85,13 +108,13 @@ function ListingCard({
     <div className="h-full overflow-hidden rounded-2xl bg-card text-card-foreground shadow-sm ring-1 ring-border transition will-change-transform group-hover:shadow-md group-hover:ring-foreground/15">
       <div className="relative">
         <img
-          src={imageURL || '/logo.png'}
+          src={imageSrc || '/logo.png'}
           alt={itemName}
-          className={`h-40 w-full ${imageURL ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
+          className={`h-40 w-full ${imageSrc ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
           loading="lazy"
         />
 
-        {imageURL && (
+        {imageSrc && (
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 via-black/0 to-black/0" />
         )}
 
@@ -612,7 +635,7 @@ export default function UserHome() {
             <div className="flex flex-col">
               <div className="relative">
                 <img
-                  src={selected.imageURL || '/logo.png'}
+                  src={toImageSrc(selected.imageURL) || '/logo.png'}
                   alt={selected.itemName}
                   className={`h-44 w-full ${selected.imageURL ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
                 />

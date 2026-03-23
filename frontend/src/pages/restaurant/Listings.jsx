@@ -23,17 +23,20 @@ function getField(item, ...keys) {
 function toImageSrc(value) {
   if (!value) return null;
 
-  const raw = String(value).trim();
+  let raw = String(value).trim();
 
-  let finalUrl;
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {}
 
-  if (raw.startsWith('http')) {
-    finalUrl = raw;
-  } else {
-    finalUrl = `https://${import.meta.env.VITE_S3_BUCKET}.s3.${import.meta.env.VITE_AWS_REGION}.amazonaws.com/${raw}`;
-  }
+  const bucket = import.meta.env.VITE_S3_BUCKET;
+  const region = import.meta.env.VITE_AWS_REGION;
 
-  console.log("IMAGE URL:", finalUrl);
+  const key = raw.startsWith("foods/") ? raw : `foods/${raw}`;
+
+  const finalUrl = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+
+  console.log("FINAL IMAGE URL:", finalUrl);
 
   return finalUrl;
 }
