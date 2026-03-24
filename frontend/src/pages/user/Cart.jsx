@@ -163,6 +163,7 @@ export default function UserCart() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          orderId: pendingOrderId,
           userId: user.id,
           cart: cartPayload,
           currency: 'sgd',

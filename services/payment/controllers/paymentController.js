@@ -12,6 +12,32 @@ function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
 }
 
+async function getStripeLineItemsAsPaymentItems(sessionId) {
+  const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 });
+  const items = (lineItems?.data || [])
+    .map((li) => {
+      const quantity = Number(li?.quantity ?? 0);
+      const unitAmount = Number(
+        li?.price?.unit_amount ??
+          (li?.amount_subtotal && quantity ? Math.round(Number(li.amount_subtotal) / quantity) : 0)
+      );
+      const name = String(li?.description || '').trim();
+
+      if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitAmount) || unitAmount < 0) {
+        return null;
+      }
+
+      return {
+        name,
+        unitAmount,
+        quantity,
+      };
+    })
+    .filter(Boolean);
+
+  return items;
+}
+
 async function retryGetPayment(paymentId, retries = 5, delayMs = 1000) {
   for (let i = 0; i < retries; i++) {
     const record = await getPaymentByIdFromDb(paymentId);
@@ -177,30 +203,61 @@ export async function logPayment(req, res) {
   }
 }
 
-async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord }) {
-  if (!paymentId || !orderId || !paymentRecord) return { published: false, reason: 'missing_data' };
+async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session }) {
+  if (!paymentId || !orderId) return { published: false, reason: 'missing_data' };
 
-  if (paymentRecord.stockCheckPublishedAt || paymentRecord.stockCheckPublished) {
+  if (paymentRecord?.stockCheckPublishedAt || paymentRecord?.stockCheckPublished) {
     console.log('[Payment] Stock check already published for paymentId:', paymentId);
     return { published: false, reason: 'already_published' };
+  }
+
+  let items = Array.isArray(paymentRecord?.items) ? paymentRecord.items : [];
+  let amountTotal = Number(paymentRecord?.amountTotal ?? NaN);
+  let currency = paymentRecord?.currency;
+
+  if ((!items || items.length === 0) && session?.id) {
+    try {
+      items = await getStripeLineItemsAsPaymentItems(session.id);
+      amountTotal = Number.isFinite(amountTotal)
+        ? amountTotal
+        : Number(session.amount_total ?? calculateAmountTotal(items));
+      currency = currency || session.currency;
+      console.warn('[Payment] Payment record missing items; falling back to Stripe line_items.');
+    } catch (err) {
+      console.error('[Payment] ❌ Failed to fetch Stripe line_items:', err?.message || err);
+    }
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    console.error('[Payment] ❌ Cannot publish stock check: missing items');
+    return { published: false, reason: 'missing_items' };
+  }
+
+  if (!Number.isFinite(amountTotal)) {
+    amountTotal = calculateAmountTotal(items);
   }
 
   const queuePayload = {
     orderId,
     paymentId,
     userId,
-    currency: paymentRecord.currency || 'sgd',
-    amountTotal: paymentRecord.amountTotal,
-    items: paymentRecord.items,
+    currency: currency || 'sgd',
+    amountTotal,
+    items,
   };
 
   console.log('[Payment] Publishing stock check to queue:', JSON.stringify(queuePayload, null, 2));
   await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
 
-  await createOrUpdatePayment(paymentId, {
+  const paymentUpdates = {
     stockCheckPublished: true,
     stockCheckPublishedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  };
+  if (!paymentRecord?.items || paymentRecord.items.length === 0) paymentUpdates.items = items;
+  if (paymentRecord?.amountTotal == null) paymentUpdates.amountTotal = amountTotal;
+  if (!paymentRecord?.currency && currency) paymentUpdates.currency = currency;
+
+  await createOrUpdatePayment(paymentId, paymentUpdates);
 
   return { published: true };
 }
@@ -238,7 +295,11 @@ export async function confirmCheckoutSession(req, res) {
     });
 
     const paymentRecord = await retryGetPayment(paymentId);
-    const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord });
+    const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+
+    if (!result.published && result.reason !== 'already_published') {
+      return res.status(500).json({ error: 'Failed to publish stock check', reason: result.reason });
+    }
 
     return res.json({ success: true, paymentId, orderId, ...result });
   } catch (error) {
@@ -290,13 +351,16 @@ export async function handleStripeWebhook(req, res) {
         const paymentRecord = paymentId ? await retryGetPayment(paymentId) : null;
         console.log('[Webhook] Payment record fetched:', JSON.stringify(paymentRecord, null, 2));
 
-        if (orderId && paymentRecord) {
+        if (orderId) {
           try {
-            const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord });
+            const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
             if (result.published) {
               console.log('[Webhook] ✅ Published stock check to RabbitMQ');
             } else {
-              console.log('[Webhook] ℹ️ Skipped stock check publish:', result.reason);
+              console.log('[Webhook] Skipped stock check publish:', result.reason);
+              if (result.reason !== 'already_published') {
+                throw new Error(`stock_check_publish_${result.reason}`);
+              }
             }
           } catch (err) {
             console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
@@ -353,7 +417,7 @@ export async function handleStripeWebhook(req, res) {
 
     res.json({ received: true });
   } catch (error) {
-    console.error('[Webhook] ❌ Handler error:', error);
+    console.error('[Webhook] ❌ Handler error:', error?.stack || error);
     res.status(500).json({ error: "Webhook handling failed", details: error?.message || String(error) });
   }
 }

@@ -103,6 +103,7 @@ app.get("/health", (req, res) => {
 app.post("/orders/place", async (req, res) => {
   try {
     const {
+      orderId: incomingOrderId,
       customerId: _customerId,
       userId,
       items: _items,
@@ -145,11 +146,12 @@ app.post("/orders/place", async (req, res) => {
       };
     });
 
-    // orderId generated here — flows into Stripe metadata → consumer → order service
-    const orderId = generateOrderId();
+    // orderId flows into Stripe metadata → consumer → order service
+    const orderId = incomingOrderId || generateOrderId();
 
     const paymentItems = normalizedItems.map((item) => ({
       name: item.name,
+      itemId: item?.itemId || item?.listingId || item?.id || null,
       unitAmount: item.unitAmount,
       quantity: item.quantity,
     }));
@@ -229,10 +231,7 @@ app.post("/orders/inventory-result", async (req, res) => {
       });
       console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
 
-      // Decrement inventory in Inventory Service
-      console.log(`[place-order] ✅ print confirmed items for inventory decrement:`, confirmedItems);
-      console.log(`[place-order] test inventory link: ${INVENTORY_SERVICE_URL}`);
-      decrementOutSystemsInventory(confirmedItems);
+      // Inventory decrement happens in the inventory consumer as part of stock-check processing.
 
       // Step 9 — Log payment details to Payment Service
       try {
@@ -285,20 +284,7 @@ app.post("/orders/inventory-result", async (req, res) => {
       });
       console.log(`[place-order] ✅ Partial order created`);
 
-      // Trigger refund for out-of-stock items
-      try {
-        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${paymentId}/refund`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: refundAmount,
-            reason: `inventory_conflict: ${(insufficientItems || []).map(i => i.name).join(", ")} out of stock`,
-          }),
-        });
-        console.log(`[place-order] ✅ Partial refund triggered — amount: ${refundAmount}`);
-      } catch (err) {
-        console.warn(`[place-order] ⚠️ Partial refund failed:`, err.message);
-      }
+      // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
 
       // Fire-and-forget notification
       fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
@@ -314,20 +300,7 @@ app.post("/orders/inventory-result", async (req, res) => {
     // ── FULL STOCK FAILURE ────────────────────────────────────────────────────
     if (status === "failed") {
       console.log(`[place-order] ❌ All items out of stock — full refund for order ${orderId}`);
-
-      try {
-        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${paymentId}/refund`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: amountTotal,
-            reason: "inventory_conflict: all items out of stock",
-          }),
-        });
-        console.log(`[place-order] ✅ Full refund triggered — amount: ${amountTotal}`);
-      } catch (err) {
-        console.warn(`[place-order] ⚠️ Full refund failed:`, err.message);
-      }
+      // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
 
       // Fire-and-forget notification
       fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {

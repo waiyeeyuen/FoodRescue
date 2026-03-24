@@ -111,44 +111,6 @@ export default function PaymentSuccessPage() {
   const sessionId = searchParams.get('session_id');
   const paymentServiceUrl =
     import.meta.env.VITE_PAYMENT_SERVICE_URL || 'http://localhost:3003';
-  const orderServiceUrl =
-    import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
-
-  async function sendOrderToBackend({ userId, items, orderId, pickupTime }) {
-    if (!userId || !Array.isArray(items) || items.length === 0) return;
-
-    const { normalized, totalPrice } = normalizeOrderItems(items);
-    if (normalized.length === 0) return;
-
-    const response = await fetch(`${orderServiceUrl}/orders`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        customerId: userId,
-        orderId,
-        // Order service requires `totalPrice`; pickupTime is not part of its schema.
-        totalPrice,
-        items: normalized.map((i) => ({
-          id: i.id,
-          name: i.name,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice
-        })),
-        notes: pickupTime ? `Pickup: ${pickupTime}` : '',
-        status: 'confirmed',
-      }),
-    });
-
-    if (!response.ok) {
-      const errorMessage = await readErrorMessage(
-        response,
-        'Failed to save order to backend'
-      );
-      throw new Error(errorMessage);
-    }
-  }
 
   useEffect(() => {
     if (processedRef.current) return;
@@ -215,7 +177,7 @@ export default function PaymentSuccessPage() {
     }
 
     finalizePayment();
-  }, [sessionId, user?.id, addOrdersFromCart, clearCart, paymentServiceUrl, orderServiceUrl]);
+  }, [sessionId, user?.id, addOrdersFromCart, clearCart, paymentServiceUrl]);
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-4">

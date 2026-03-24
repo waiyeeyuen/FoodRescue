@@ -9,11 +9,26 @@ export const QUEUES = {
 let connection = null;
 let channel = null;
 
+function maskUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.password = parsed.password ? '***' : '';
+    }
+    return parsed.toString();
+  } catch {
+    // Fallback for non-standard/invalid URLs
+    return String(url).replace(/\/\/([^:/@]+):([^@]+)@/g, '//\$1:***@');
+  }
+}
+
+console.log('[RabbitMQ] Using URL:', maskUrl(RABBITMQ_URL));
+
 async function connectWithRetry(retries = 5, delayMs = 1000) {
   let lastError;
   for (let i = 0; i < retries; i += 1) {
     try {
-      console.log(`[RabbitMQ] Connecting to ${RABBITMQ_URL} (attempt ${i + 1}/${retries})`);
+      console.log(`[RabbitMQ] Connecting to ${maskUrl(RABBITMQ_URL)} (attempt ${i + 1}/${retries})`);
       const conn = await amqplib.connect(RABBITMQ_URL);
       conn.on('error', (err) => {
         console.error('[RabbitMQ] Connection error:', err?.message || err);
@@ -26,7 +41,8 @@ async function connectWithRetry(retries = 5, delayMs = 1000) {
       return conn;
     } catch (err) {
       lastError = err;
-      console.error('[RabbitMQ] Connect failed:', err?.message || err);
+      const code = err?.code ? ` (${err.code})` : '';
+      console.error(`[RabbitMQ] Connect failed${code}:`, err?.message || err);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }

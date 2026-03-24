@@ -147,6 +147,19 @@ services:
     volumes:
       - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
 
+  refund-management:
+    build:
+      context: .
+      dockerfile: services/refund-management/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      payment:
+        condition: service_started
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PAYMENT_SERVICE_URL: http://payment:3003
+
   recommendation:
     build:
       context: .
