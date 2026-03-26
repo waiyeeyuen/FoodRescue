@@ -312,6 +312,57 @@ app.delete('/account/:id/cart/items/:listingId', async (req, res) => {
   }
 });
 
+// CART: Update an existing cart item by listingId
+app.put('/account/:id/cart/items/:listingId', async (req, res) => {
+  try {
+    const { id, listingId } = req.params;
+    const { quantity, pickupTime, item } = req.body || {};
+
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: 'quantity must be a positive number' });
+    }
+
+    const docRef = USERS.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Not found' });
+
+    const data = doc.data() || {};
+    const cart = Array.isArray(data.cart) ? data.cart.slice() : [];
+    const idx = cart.findIndex(
+      (c) => String(c?.listingId || '') === String(listingId)
+    );
+
+    if (idx < 0) {
+      return res.status(404).json({ error: 'Cart item not found' });
+    }
+
+    const existing = cart[idx] || {};
+    const normalized = item ? normalizeCartItem(item) : {};
+
+    cart[idx] = {
+      ...existing,
+      ...normalized,
+      listingId: String(existing?.listingId || listingId),
+      quantity: qty,
+      pickupTime:
+        pickupTime !== undefined && pickupTime !== null
+          ? String(pickupTime)
+          : String(existing?.pickupTime || ''),
+      updatedAt: new Date().toISOString()
+    };
+
+    await docRef.update({
+      cart,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ cart });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // CART: Clear cart
 app.post('/account/:id/cart/clear', async (req, res) => {
   try {

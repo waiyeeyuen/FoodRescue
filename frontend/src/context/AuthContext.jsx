@@ -327,6 +327,42 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  const updateCartItem = async ({ listingId, item, quantity, pickupTime }) => {
+    if (!user?.id) throw new Error('Not logged in');
+    if (user?.restaurantName) throw new Error('Cart is only available for users');
+
+    const qty = Number(quantity ?? 0);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error('Invalid quantity');
+    }
+
+    const res = await fetch(
+      `${accountServiceBaseUrl}/account/${encodeURIComponent(user.id)}/cart/items/${encodeURIComponent(listingId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quantity: qty,
+          pickupTime,
+          item: item || undefined,
+        }),
+      }
+    );
+
+    const data = await readResponseBody(res);
+
+    if (!res.ok) {
+      const message =
+        (data && typeof data === 'object' && data.error) ||
+        (typeof data === 'string' ? data : null) ||
+        `Failed to update cart item (${res.status})`;
+      throw new Error(message);
+    }
+
+    setCart(Array.isArray(data?.cart) ? data.cart.map(normalizeCartEntry) : []);
+    return data;
+  };
+
   const clearCart = async () => {
     if (!user?.id) throw new Error('Not logged in');
     if (user?.restaurantName) throw new Error('Cart is only available for users');
@@ -536,6 +572,7 @@ export function AuthProvider({ children }) {
         refreshCart,
         addToCart,
         removeFromCart,
+        updateCartItem,
         clearCart,
         favorites,
         favoriteCount,

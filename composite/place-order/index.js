@@ -11,6 +11,9 @@ const PAYMENT_SERVICE_URL     = process.env.PAYMENT_SERVICE_URL     || "http://l
 const ORDER_SERVICE_URL        = process.env.ORDER_SERVICE_URL        || "http://localhost:3004";
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
 const INVENTORY_SERVICE_URL    = process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
+const REWARD_SERVICE_URL       = process.env.REWARD_SERVICE_URL       || "http://localhost:3005";
+const REWARD_STAMP_TARGET = 5;
+const REWARD_DISCOUNT_PERCENT = 20;
 
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
   .split(",").map((v) => v.trim()).filter(Boolean);
@@ -93,10 +96,128 @@ function generateOrderId() {
   return "ORD_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
 }
 
+function parseInteger(value, defaultValue = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  return Math.max(0, Math.floor(parsed));
+}
+
+function normalizeRewardStatus(payload, stampsCount) {
+  const completedOrdersTowardsReward = (Number(stampsCount) || 0) % REWARD_STAMP_TARGET;
+  const eligibleRaw =
+    payload?.eligible ??
+    payload?.Eligible ??
+    payload?.isEligible ??
+    payload?.IsEligible ??
+    payload?.active ??
+    payload?.Active;
+
+  const eligible =
+    eligibleRaw === undefined
+      ? false
+      : Boolean(
+          typeof eligibleRaw === "string"
+            ? ["true", "1", "yes", "active"].includes(eligibleRaw.trim().toLowerCase())
+            : eligibleRaw
+        );
+
+  const ordersLeftRaw =
+    payload?.ordersLeft ??
+    payload?.OrdersLeft ??
+    payload?.remainingOrders ??
+    payload?.RemainingOrders;
+  const parsedOrdersLeft = Number(ordersLeftRaw);
+  const ordersLeft = Number.isFinite(parsedOrdersLeft)
+    ? Math.max(0, Math.floor(parsedOrdersLeft))
+    : (eligible ? 0 : (REWARD_STAMP_TARGET - 1) - completedOrdersTowardsReward);
+
+  const discountPercentRaw =
+    payload?.discountPercent ??
+    payload?.DiscountPercent ??
+    payload?.discount_percentage ??
+    payload?.DiscountPercentage;
+  const discountPercent = Number(discountPercentRaw ?? (eligible ? REWARD_DISCOUNT_PERCENT : 0));
+
+  return {
+    stampsCount,
+    eligible,
+    active: eligible,
+    ordersLeft,
+    stampTarget: Number(payload?.stampTarget ?? payload?.StampTarget ?? REWARD_STAMP_TARGET) || REWARD_STAMP_TARGET,
+    discountPercent: Number.isFinite(discountPercent) ? discountPercent : 0,
+    voucherId: String(payload?.voucherId ?? payload?.VoucherId ?? ""),
+    source: payload?.source || payload?.Source || "unknown",
+    raw: payload,
+  };
+}
+
+async function markRewardUsedIfNeeded(paymentId, orderId) {
+  if (!paymentId) return;
+
+  try {
+    const payment = await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}`);
+    const reward = payment?.reward;
+
+    if (!reward?.eligible) return;
+
+    await fetchJson(`${REWARD_SERVICE_URL}/reward/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: payment?.userId,
+        voucherId: reward?.voucherId || "",
+      }),
+    });
+
+    console.log(`[place-order] Reward usage recorded for order ${orderId}`);
+  } catch (error) {
+    console.warn(`[place-order] Reward update failed for order ${orderId}:`, error.message);
+  }
+}
+
+async function getConfirmedOrderCount(userId) {
+  if (!userId) return 0;
+
+  const historyResponse = await fetchJson(
+    `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=100`
+  );
+
+  if (Number.isFinite(Number(historyResponse?.totalOrders))) {
+    return parseInteger(historyResponse.totalOrders, 0);
+  }
+
+  const history = Array.isArray(historyResponse?.orderHistory)
+    ? historyResponse.orderHistory
+    : [];
+  return history.length;
+}
+
+async function getRewardStatus(userId) {
+  const stampsCount = await getConfirmedOrderCount(userId);
+
+  try {
+    const rewardPayload = await fetchJson(
+      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
+    );
+    return normalizeRewardStatus(rewardPayload, stampsCount);
+  } catch (error) {
+    return normalizeRewardStatus({ source: "local-fallback" }, stampsCount);
+  }
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "composite-place-order" });
+});
+
+app.get("/orders/reward-status/:userId", async (req, res) => {
+  try {
+    const reward = await getRewardStatus(req.params.userId);
+    res.json({ success: true, reward });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to fetch reward status" });
+  }
 });
 
 // Step 3 — UI calls this to begin order process
@@ -149,11 +270,20 @@ app.post("/orders/place", async (req, res) => {
     // orderId flows into Stripe metadata → consumer → order service
     const orderId = incomingOrderId || generateOrderId();
 
+    const reward = await getRewardStatus(customerId);
+    const multiplier = reward.eligible && Number(reward.discountPercent) > 0
+      ? (100 - Number(reward.discountPercent)) / 100
+      : 1;
+
     const paymentItems = normalizedItems.map((item) => ({
       name: item.name,
       itemId: item?.itemId || item?.listingId || item?.id || null,
-      unitAmount: item.unitAmount,
+      originalUnitAmount: item.unitAmount,
+      unitAmount: Math.max(0, Math.round(item.unitAmount * multiplier)),
       quantity: item.quantity,
+      pickupTime: item?.pickupTime || "",
+      restaurantName: item?.restaurantName || "",
+      restaurantId: item?.restaurantId || "",
     }));
 
     // Step 10 — call Payment Service to create Stripe session
@@ -169,6 +299,7 @@ app.post("/orders/place", async (req, res) => {
           currency,
           successUrl,
           cancelUrl,
+          reward,
         }),
       }
     );
@@ -178,6 +309,7 @@ app.post("/orders/place", async (req, res) => {
     res.status(201).json({
       success: true,
       orderId,
+      reward,
       payment: paymentResponse,
     });
   } catch (error) {
@@ -250,6 +382,8 @@ app.post("/orders/inventory-result", async (req, res) => {
         console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, err.message);
       }
 
+      await markRewardUsedIfNeeded(paymentId, orderId);
+
       // Step 10 — Fire-and-forget notification
       fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
         userId,
@@ -285,6 +419,7 @@ app.post("/orders/inventory-result", async (req, res) => {
       console.log(`[place-order] ✅ Partial order created`);
 
       // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
+      await markRewardUsedIfNeeded(paymentId, orderId);
 
       // Fire-and-forget notification
       fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {

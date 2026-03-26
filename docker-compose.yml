@@ -127,6 +127,7 @@ services:
       PAYMENT_SERVICE_URL: http://payment:3003
       ORDER_SERVICE_URL: http://order:3004
       NOTIFICATION_SERVICE_URL: http://notification:3006
+      REWARD_SERVICE_URL: http://reward:3005
     env_file:
       - ./composite/place-order/.env
 

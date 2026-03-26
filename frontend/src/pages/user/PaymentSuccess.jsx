@@ -134,7 +134,9 @@ export default function PaymentSuccessPage() {
         }
 
         const items = Array.isArray(pending?.items) ? pending.items : [];
-        const pickupTime = pending?.pickupTime || '';
+        const pickupTime =
+          pending?.pickupTime ||
+          (items.length === 1 ? (items[0]?.pickupTime || '') : '');
         const orderId =
           pending?.orderId || pending?.sessionId || sessionId || `ORD-${Date.now()}`;
 

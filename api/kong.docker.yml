@@ -95,6 +95,7 @@ services:
       - name: composite-place-order-route
         paths:
           - /orders/place
+          - /orders/reward-status
         strip_path: false
 
   - name: composite-upload-listing

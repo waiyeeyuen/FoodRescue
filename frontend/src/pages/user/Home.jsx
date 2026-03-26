@@ -55,6 +55,32 @@ function getRawQuantity(item) {
   );
   return Number.isFinite(value) ? value : 0;
 }
+
+function formatLocalDateTimeInput(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
+}
+
+function getDefaultPickupDateTime() {
+  const nextSlot = new Date();
+  nextSlot.setMinutes(nextSlot.getMinutes() + 30);
+  nextSlot.setSeconds(0, 0);
+  return formatLocalDateTimeInput(nextSlot);
+}
+
+function getMinimumPickupDateTime() {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  return formatLocalDateTimeInput(now);
+}
+
+function getMaximumPickupDateTime(expiryDate) {
+  if (!(expiryDate instanceof Date) || Number.isNaN(expiryDate.getTime())) return undefined;
+  return formatLocalDateTimeInput(expiryDate);
+}
+
 function toImageSrc(value) {
   if (!value) return null;
 
@@ -412,7 +438,7 @@ export default function UserHome() {
 
   useEffect(() => {
     setOrderQty(0);
-    setPickupTime('');
+    setPickupTime(getDefaultPickupDateTime());
     setAddCartError(null);
   }, [selectedItem]);
 
@@ -524,19 +550,6 @@ export default function UserHome() {
             </button>
           )}
         </div>
-
-        {!loading && !error && visibleRecommendedListings.length > 0 && (
-          <p className="text-xs text-muted-foreground">
-            Showing {visibleRecommendedListings.length} recommended listing
-            {visibleRecommendedListings.length > 1 ? 's' : ''}
-          </p>
-        )}
-
-        {!loading && !error && geminiUsed && geminiReasoning && (
-          <p className="max-w-3xl rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-700">
-            ✨ {geminiReasoning}
-          </p>
-        )}
       </div>
 
       {loading ? (
@@ -721,12 +734,14 @@ export default function UserHome() {
 
                   <div>
                     <label className="mb-2 block text-sm font-medium text-slate-900">
-                      Pickup time
+                      Collection timing
                     </label>
                     <input
-                      type="time"
+                      type="datetime-local"
                       value={pickupTime}
                       onChange={(e) => setPickupTime(e.target.value)}
+                      min={getMinimumPickupDateTime()}
+                      max={getMaximumPickupDateTime(selected?.expiryDate)}
                       className="w-full rounded-2xl border border-input bg-background px-4 py-3 text-sm focus:outline-none focus:ring-4 focus:ring-ring/20"
                     />
                   </div>

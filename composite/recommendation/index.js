@@ -81,6 +81,48 @@ async function fetchJson(url, options) {
   return data;
 }
 
+function parseRewardEligibility(payload, stampsCount) {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const completedOrdersTowardsReward = (Number(stampsCount) || 0) % 5;
+  const eligibleRaw = getField(data, "eligible", "Eligible", "isEligible", "IsEligible", "active", "Active");
+  const eligible =
+    eligibleRaw === undefined
+      ? false
+      : Boolean(
+          typeof eligibleRaw === "string"
+            ? ["true", "1", "yes", "active"].includes(eligibleRaw.trim().toLowerCase())
+            : eligibleRaw
+        );
+
+  const ordersLeftRaw = getField(data, "ordersLeft", "OrdersLeft", "remainingOrders", "RemainingOrders");
+  const parsedOrdersLeft = Number(ordersLeftRaw);
+  const ordersLeft = Number.isFinite(parsedOrdersLeft)
+    ? Math.max(0, Math.floor(parsedOrdersLeft))
+    : (eligible ? 0 : 4 - completedOrdersTowardsReward);
+
+  const discountPercentRaw = getField(
+    data,
+    "discountPercent",
+    "DiscountPercent",
+    "discount_percentage",
+    "DiscountPercentage"
+  );
+  const discountPercent = Number(discountPercentRaw ?? (eligible ? 20 : 0));
+
+  return {
+    success: true,
+    stampsCount,
+    eligible,
+    active: eligible,
+    ordersLeft,
+    discountPercent: Number.isFinite(discountPercent) ? discountPercent : 0,
+    stampTarget: Number(getField(data, "stampTarget", "StampTarget") ?? 5) || 5,
+    voucherId: String(getField(data, "voucherId", "VoucherId") || ""),
+    source: getField(data, "source", "Source") || "unknown",
+    data,
+  };
+}
+
 function parseBool(value, defaultValue = false) {
   if (value === undefined) return defaultValue;
   if (typeof value === "boolean") return value;
@@ -231,6 +273,7 @@ app.get("/recommendations/:userId", async (req, res) => {
 
   // Step 1 — Order service
   let orderHistory = [];
+  let totalConfirmedOrders = 0;
   try {
     orderHistoryResponse = await fetchJson(
       `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`
@@ -238,14 +281,16 @@ app.get("/recommendations/:userId", async (req, res) => {
     orderHistory = Array.isArray(orderHistoryResponse?.orderHistory)
       ? orderHistoryResponse.orderHistory
       : [];
+    totalConfirmedOrders = Number(orderHistoryResponse?.totalOrders ?? orderHistory.length) || orderHistory.length;
     console.log("Order hit! order history:", orderHistory);
   } catch (error) {
     orderHistoryResponse = { success: false, error: error.message, status: error.status || 500 };
     orderHistory = [];
+    totalConfirmedOrders = 0;
     console.log("Order hit! order history:", []);
   }
 
-  const stampsCount = orderHistory.length;
+  const stampsCount = totalConfirmedOrders;
 
   // Step 2 — Inventory service
   let listings = [];
@@ -262,11 +307,10 @@ app.get("/recommendations/:userId", async (req, res) => {
   // Step 3 — Reward service
   try {
     const rewardPayload = await fetchJson(
-      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}`
+      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
     );
-    const eligible = rewardPayload?.IsEligible ?? rewardPayload?.eligible ?? false;
-    rewardEligibility = { success: true, stampsCount, data: rewardPayload };
-    console.log("Rewards hit! reward eligibility:", eligible);
+    rewardEligibility = parseRewardEligibility(rewardPayload, stampsCount);
+    console.log("Rewards hit! reward eligibility:", rewardEligibility.eligible);
   } catch (error) {
     rewardEligibility = { success: false, stampsCount, error: error.message, status: error.status || 500 };
     console.log("Rewards hit! reward eligibility:", false);

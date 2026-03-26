@@ -76,7 +76,7 @@ export async function getPaymentById(req, res) {
 
 export async function createCheckoutSession(req, res) {
   try {
-    const { orderId, userId, items, currency, successUrl, cancelUrl } = req.body;
+    const { orderId, userId, items, currency, successUrl, cancelUrl, reward } = req.body;
 
     if (!orderId || !userId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "orderId, userId, and items are required" });
@@ -112,6 +112,7 @@ export async function createCheckoutSession(req, res) {
       status: "pending",
       currency: currency || "sgd",
       amountTotal, items,
+      reward: reward || null,
       stripeSessionId: session.id,
       stripePaymentIntentId: null,
       checkoutUrl: session.url,
