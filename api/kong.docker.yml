@@ -1,0 +1,123 @@
+_format_version: "3.0"
+_transform: true
+
+plugins:
+  - name: cors
+    config:
+      origins:
+        - http://localhost:3000
+        - http://localhost:5173
+      methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Content-Type
+        - Authorization
+      exposed_headers:
+        - Content-Length
+      credentials: true
+      max_age: 3600
+
+services:
+  - name: inventory
+    url: http://inventory:3000
+    routes:
+      - name: inventory-route
+        paths:
+          - /inventory
+        strip_path: false
+
+  - name: payment-webhook
+    url: http://payment:3003
+    routes:
+      - name: payment-webhook-route
+        paths:
+          - /payments/webhook
+        strip_path: false
+        methods:
+          - POST
+
+  - name: payment
+    url: http://payment:3003
+    routes:
+      - name: payment-route
+        paths:
+          - /payments
+        strip_path: false
+
+  - name: order
+    url: http://order:3004
+    routes:
+      - name: order-route
+        paths:
+          - /orders
+        strip_path: false
+
+  - name: reward
+    url: http://reward:3005
+    routes:
+      - name: reward-route
+        paths:
+          - /reward
+        strip_path: false
+
+  - name: account
+    url: http://account:3001
+    routes:
+      - name: account-route
+        paths:
+          - /account
+        strip_path: false
+
+  - name: notification
+    url: http://notification:3006
+    routes:
+      - name: notification-route
+        paths:
+          - /notifications
+        strip_path: false
+
+  - name: composite-recommendation
+    url: http://recommendation:4000
+    routes:
+      - name: composite-recommendation-route
+        paths:
+          - /recommendations
+        strip_path: false
+
+  - name: composite-place-order
+    url: http://place-order:4001
+    routes:
+      - name: composite-place-order-route
+        paths:
+          - /orders/place
+          - /orders/reward-status
+        strip_path: false
+
+  - name: composite-upload-listing
+    url: http://upload-listing:4002
+    routes:
+      - name: composite-upload-listing-route
+        paths:
+          - /listings
+        strip_path: false
+
+  - name: composite-remove-expired
+    url: http://remove-expired:4003
+    routes:
+      - name: composite-remove-expired-route
+        paths:
+          - /cleanup
+        strip_path: false
+
+  - name: composite-checkout
+    url: http://checkout:4004
+    routes:
+      - name: composite-checkout-route
+        paths:
+          - /checkout
+        strip_path: false

@@ -20,6 +20,26 @@ function getField(item, ...keys) {
   return undefined;
 }
 
+function toImageSrc(value) {
+  if (!value) return null;
+
+  let raw = String(value).trim();
+
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {}
+
+  const bucket = import.meta.env.VITE_S3_BUCKET;
+  const region = import.meta.env.VITE_AWS_REGION;
+
+  const key = raw.startsWith("foods/") ? raw : `foods/${raw}`;
+
+  const finalUrl = `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+
+  console.log("FINAL IMAGE URL:", finalUrl);
+
+  return finalUrl;
+}
 function parseExpiryToMs(item) {
   const raw = getField(item, 'expiryTime', 'ExpiryTime');
   if (raw === undefined || raw === null) return null;
@@ -78,7 +98,10 @@ export default function RestaurantListings() {
   const [error, setError] = useState(null);
 
   const [creating, setCreating] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [createError, setCreateError] = useState(null);
+  const [uploadImageError, setUploadImageError] = useState(null);
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsItem, setDetailsItem] = useState(null);
@@ -108,43 +131,69 @@ export default function RestaurantListings() {
     });
   }, [user?.restaurantName]);
 
-  const fetchListings = async (signal) => {
-    if (!restaurantId) return;
-    try {
-      setLoading(true);
-      setError(null);
-      const res = await fetch(
-        `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
-        { signal }
-      );
-      if (!res.ok) {
-        let message = 'Failed to load listings';
-        try {
-          const body = await readResponseBody(res);
-          if (typeof body === 'string') {
-            message = body || message;
-          } else {
-            message = body?.error || message;
-          }
-        } catch {
-          // ignore
-        }
-        throw new Error(message);
+  const fetchListings = async (signal, { showLoading = true } = {}) => {
+  if (!restaurantId) return;
+
+  try {
+    if (showLoading) setLoading(true);
+    setError(null);
+
+    console.log("📡 Fetching listings for restaurantId:", restaurantId);
+
+    const res = await fetch(
+      `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
+      { signal }
+    );
+
+    console.log("📡 Response status:", res.status);
+
+    const data = await readResponseBody(res);
+
+    console.log("🔥 RAW LISTINGS FROM BACKEND:", data);
+
+    if (!res.ok) {
+      let message = 'Failed to load listings';
+      if (typeof data === 'string') {
+        message = data || message;
+      } else {
+        message = data?.error || message;
       }
-      const data = await readResponseBody(res);
-      setListings(Array.isArray(data) ? data : []);
-    } catch (e) {
-      if (e?.name === 'AbortError') return;
-      setError(e?.message || 'Failed to load listings');
-    } finally {
-      setLoading(false);
+      throw new Error(message);
     }
-  };
+
+    console.log("✅ Setting listings:", data);
+
+    setListings(Array.isArray(data) ? data : []);
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+    console.error("❌ fetchListings error:", e);
+    setError(e?.message || 'Failed to load listings');
+  } finally {
+    if (showLoading) setLoading(false);
+  }
+};
 
   useEffect(() => {
-    const controller = new AbortController();
-    fetchListings(controller.signal);
-    return () => controller.abort();
+    let activeController = null;
+
+    const runFetch = ({ showLoading = false } = {}) => {
+      const controller = new AbortController();
+      activeController = controller;
+      fetchListings(controller.signal, { showLoading });
+    };
+
+    runFetch({ showLoading: true });
+
+    // Keep restaurant listing status fresh every minute (active vs expired).
+    const intervalId = setInterval(() => {
+      if (activeController) activeController.abort();
+      runFetch();
+    }, 60 * 1000);
+
+    return () => {
+      clearInterval(intervalId);
+      if (activeController) activeController.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inventoryServiceUrl, restaurantId]);
 
@@ -158,10 +207,7 @@ export default function RestaurantListings() {
         const quantity = Number(getField(item, 'quantity', 'Quantity') ?? 0);
         const price = Number(getField(item, 'price', 'Price') ?? 0);
         const imageUrlRaw = getField(item, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl');
-        const imageUrl =
-          imageUrlRaw === undefined || imageUrlRaw === null || String(imageUrlRaw).trim() === ''
-            ? null
-            : String(imageUrlRaw).trim();
+        const imageUrl = toImageSrc(imageUrlRaw);
         return {
           key: getField(item, 'Id', 'id', 'listingId', 'ListingId') ?? `${name}-${expiryMs ?? ''}`,
           name,
@@ -216,81 +262,115 @@ export default function RestaurantListings() {
     setDetailsOpen(true);
   };
 
-  const onCreate = async (e) => {
-    e.preventDefault();
-    if (!restaurantId) {
-      setCreateError('Missing restaurant id');
-      return;
-    }
+  const handleImageUpload = async (file) => {
+    if (!file) return;
 
-    setCreating(true);
-    setCreateError(null);
+    setUploadingImage(true);
+    setUploadImageError(null);
+
     try {
-      const expiryMs = new Date(form.expiryLocal).getTime();
-      if (!Number.isFinite(expiryMs)) throw new Error('Invalid expiry time');
+      const formData = new FormData();
+      formData.append('image', file);
 
-      const parsedPrice = Number(form.price);
-      const parsedQuantity = Number(form.quantity);
-      const parsedOriginalPrice = form.originalPrice === '' ? null : Number(form.originalPrice);
-      if (!Number.isFinite(parsedPrice) || !Number.isFinite(parsedQuantity)) {
-        throw new Error('Price and quantity must be valid numbers');
-      }
-      if (parsedOriginalPrice !== null && !Number.isFinite(parsedOriginalPrice)) {
-        throw new Error('Original price must be a valid number');
-      }
-
-      const payload = {
-        restaurantId,
-        restaurantName: form.restaurantName.trim(),
-        itemName: form.itemName.trim(),
-        description: form.description.trim(),
-        expiryTime: new Date(form.expiryLocal).toISOString(),
-        price: parsedPrice,
-        originalPrice: parsedOriginalPrice,
-        quantity: parsedQuantity,
-        imageURL: form.imageURL.trim(),
-        cuisineType: form.cuisineType.trim(),
-      };
-
-      const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
+      const res = await fetch(`${inventoryServiceUrl}/inventory/upload-image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: formData,
       });
 
+      const body = await readResponseBody(res);
       if (!res.ok) {
-        let message = 'Failed to create listing';
-        try {
-          const body = await readResponseBody(res);
-          if (typeof body === 'string') {
-            message = body || message;
-          } else {
-            message = body?.error || message;
-          }
-        } catch {
-          // ignore
-        }
-        throw new Error(message);
+        if (typeof body === 'string') throw new Error(body || 'Failed to upload image');
+        throw new Error(body?.error || 'Failed to upload image');
       }
 
-      setForm((f) => ({
-        ...f,
-        itemName: '',
-        description: '',
-        price: '',
-        originalPrice: '',
-        quantity: '',
-        imageURL: '',
-        cuisineType: '',
-      }));
-      await fetchListings();
-      setCreateOpen(false);
-    } catch (e2) {
-      setCreateError(e2?.message || 'Failed to create listing');
+      const imageUrl = typeof body === 'string' ? body : body?.url;
+      const storedImageValue = typeof body === 'string' ? body : body?.key;
+      if (!storedImageValue) {
+        throw new Error('Upload succeeded but no image reference was returned');
+      }
+
+      setForm((f) => ({ ...f, imageURL: String(storedImageValue) }));
+      setUploadPreviewUrl(imageUrl ? String(imageUrl) : toImageSrc(storedImageValue) || '');
+    } catch (e) {
+      setUploadImageError(e?.message || 'Failed to upload image');
     } finally {
-      setCreating(false);
+      setUploadingImage(false);
     }
   };
+
+  const onCreate = async (e) => {
+  e.preventDefault();
+
+  if (!restaurantId) {
+    setCreateError('Missing restaurant id');
+    return;
+  }
+
+  setCreating(true);
+  setCreateError(null);
+
+  try {
+    const payload = {
+      restaurantId,
+      restaurantName: form.restaurantName.trim(),
+      itemName: form.itemName.trim(),
+      description: form.description.trim(),
+      expiryTime: new Date(form.expiryLocal).toISOString(),
+      price: Number(form.price),
+      originalPrice: form.originalPrice === '' ? null : Number(form.originalPrice),
+      quantity: Number(form.quantity),
+      imageURL: form.imageURL.trim(),
+      cuisineType: form.cuisineType.trim(),
+    };
+
+    console.log("🚀 CREATING LISTING PAYLOAD:", payload);
+
+    const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    console.log("📡 Create response status:", res.status);
+
+    const body = await readResponseBody(res);
+
+    console.log("📦 Create response body:", body);
+
+    if (!res.ok) {
+      throw new Error(
+        typeof body === 'string' ? body : body?.error || 'Failed to create listing'
+      );
+    }
+
+    console.log("✅ Listing created successfully");
+
+    // ✅ reset form AFTER success
+    setForm((f) => ({
+      ...f,
+      itemName: '',
+      description: '',
+      price: '',
+      originalPrice: '',
+      quantity: '',
+      imageURL: '',
+      cuisineType: '',
+    }));
+
+    setUploadPreviewUrl('');
+
+    // ✅ refetch listings
+    await fetchListings();
+
+    setCreateOpen(false);
+
+  } catch (e) {
+    console.error("❌ Create listing error:", e);
+    setCreateError(e?.message || 'Failed to create listing');
+  } finally {
+    setCreating(false);
+  }
+};
 
   return (
     <div className="flex flex-col gap-6">
@@ -345,7 +425,11 @@ export default function RestaurantListings() {
               open={createOpen}
               onOpenChange={(open) => {
                 setCreateOpen(open);
-                if (open) setCreateError(null);
+                if (open) {
+                  setCreateError(null);
+                  setUploadImageError(null);
+                  setUploadPreviewUrl('');
+                }
               }}
             >
               <DialogTrigger
@@ -455,14 +539,50 @@ export default function RestaurantListings() {
                   </div>
 
                   <div className="sm:col-span-3">
-                    <label className="text-xs text-muted-foreground">Image URL</label>
+                    <label className="text-xs text-muted-foreground">Upload image</label>
                     <input
-                      value={form.imageURL}
-                      onChange={(e) => setForm((f) => ({ ...f, imageURL: e.target.value }))}
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        handleImageUpload(file);
+                        e.target.value = '';
+                      }}
                       className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
-                      placeholder="https://..."
+                      disabled={creating || uploadingImage}
                     />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {uploadingImage
+                      ? 'Uploading image to server...'
+                      : 'Optional. Image URL will be auto-filled after upload.'}
+                    </p>
+                    {uploadImageError && (
+                      <p className="mt-1 text-xs text-red-600">{uploadImageError}</p>
+                    )}
                   </div>
+
+                 <div className="sm:col-span-3">
+                  <label className="text-xs text-muted-foreground">
+                    Image URL (auto-filled after upload)
+                  </label>
+
+                  <input
+                    value={form.imageURL}
+                    onChange={(e) => setForm((f) => ({ ...f, imageURL: e.target.value }))}
+                    className="mt-1 w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm"
+                    placeholder="https://your-image-url..."
+                  />
+
+                  {(uploadPreviewUrl || toImageSrc(form.imageURL)) && (
+                    <div className="mt-2 overflow-hidden rounded-lg border border-border bg-muted/20">
+                      <img
+                        src={uploadPreviewUrl || toImageSrc(form.imageURL)}
+                        alt="Listing preview"
+                        className="h-28 w-full object-cover"
+                      />
+                    </div>
+                  )}
+                </div>
 
                   <div className="sm:col-span-6">
                     <label className="text-xs text-muted-foreground">Description</label>
@@ -646,9 +766,9 @@ export default function RestaurantListings() {
             <div className="grid gap-4">
               <div className="flex items-center gap-3">
                 <div className="size-10 overflow-hidden rounded-lg bg-muted ring-1 ring-border">
-                  {getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl') ? (
+                  {toImageSrc(getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl')) ? (
                     <img
-                      src={getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl')}
+                      src={toImageSrc(getField(detailsItem, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl'))}
                       alt={getField(detailsItem, 'itemName', 'ItemName', 'name', 'Name') || 'Listing'}
                       className="h-full w-full object-cover"
                       loading="lazy"

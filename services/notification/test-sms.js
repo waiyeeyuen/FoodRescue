@@ -1,7 +1,7 @@
 // test-sms.js (run: node test-sms.js)
 import { handleEvent } from './handler.js';
 import { sendNotification } from './sender.js';
-import { db } from './firebaseAdmin.js';
+import { db } from '../firebase/firebaseAdmin.js';
 
 // Simulate RabbitMQ message
 const mockMessage = {

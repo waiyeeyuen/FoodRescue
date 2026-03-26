@@ -6,3 +6,8 @@
 
 # Node dependencies
 **/node_modules
+
+**/.env
+.env*
+composite/*/.env
+services/*/.env

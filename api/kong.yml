@@ -1,12 +1,6 @@
 _format_version: "3.0"
 _transform: true
 
-# Kong DB-less declarative config.
-#
-# Upstreams are set to `host.docker.internal` (best for running Kong in Docker
-# while your Node services run on your host machine). If you run everything in a
-# Docker network, replace `host.docker.internal` with the service/container names.
-
 plugins:
   - name: cors
     config:
@@ -29,9 +23,6 @@ plugins:
       max_age: 3600
 
 services:
-  # -------------------------
-  # Atomic microservices
-  # -------------------------
   - name: inventory
     url: http://host.docker.internal:3000
     routes:
@@ -39,6 +30,16 @@ services:
         paths:
           - /inventory
         strip_path: false
+
+  - name: payment-webhook
+    url: http://host.docker.internal:3003
+    routes:
+      - name: payment-webhook-route
+        paths:
+          - /payments/webhook
+        strip_path: false
+        methods:
+          - POST
 
   - name: payment
     url: http://host.docker.internal:3003
@@ -80,9 +81,6 @@ services:
           - /notifications
         strip_path: false
 
-  # -------------------------
-  # Composite / orchestrators
-  # -------------------------
   - name: composite-recommendation
     url: http://host.docker.internal:4000
     routes:

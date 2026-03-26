@@ -4,27 +4,53 @@ import { useAuth } from '../context/AuthContext';
 
 const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
 
+function toImageSrc(value) {
+  if (!value) return null;
+
+  let raw = String(value).trim();
+
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {}
+
+  // if already full URL → use directly
+  if (raw.startsWith("http")) return raw;
+
+  const bucket = import.meta.env.VITE_S3_BUCKET;
+  const region = import.meta.env.VITE_AWS_REGION;
+
+  if (!bucket || !region) {
+    console.warn("Missing S3 env config");
+    return null;
+  }
+
+  const key = raw.startsWith("foods/") ? raw : `foods/${raw}`;
+
+  return `https://${bucket}.s3.${region}.amazonaws.com/${key}`;
+}
 function ListingCard({ item }) {
+   const imageSrc = toImageSrc(item.imageURL);
   const expiryDate = new Date(item.expiryTime);
   const now = new Date();
   const isExpiringSoon = expiryDate - now < 24 * 60 * 60 * 1000;
   const discount = item.originalPrice > 0
     ? Math.round((1 - item.price / item.originalPrice) * 100)
     : 0;
-
+    console.log("🧪 item.imageURL:", item.imageURL);
+    console.log("🧪 imageSrc:", imageSrc);
   return (
     <div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 overflow-hidden flex flex-col">
-      {item.imageURL ? (
-        <img
-          src={item.imageURL}
-          alt={item.itemName}
-          className="h-40 w-full object-cover"
-        />
-      ) : (
-        <div className="h-40 w-full bg-slate-100 flex items-center justify-center text-slate-400 text-sm">
-          No image
-        </div>
-      )}
+    {imageSrc ? (
+      <img
+        src={imageSrc}
+        alt={item.itemName}
+        className="h-40 w-full object-cover"
+      />
+    ) : (
+      <div className="h-40 w-full bg-slate-100 flex items-center justify-center text-slate-400 text-sm">
+        No image
+      </div>
+    )}
 
       <div className="p-4 flex flex-col gap-2 flex-1">
         <div className="flex items-start justify-between gap-2">

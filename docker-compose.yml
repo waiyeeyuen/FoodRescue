@@ -1,0 +1,236 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong:
+    image: kong:3.6
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/declarative/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./api/kong.docker.yml:/kong/declarative/kong.yml:ro
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+
+  account:
+    build:
+      context: .
+      dockerfile: services/account/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  inventory:
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    env_file:
+      - ./services/inventory/.env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  payment:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    ports:
+      - "3003:3003"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PORT: 3003
+    env_file:
+      - ./services/payment/.env
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  inventory-consumer:
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PLACE_ORDER_SERVICE_URL: http://place-order:4001
+    env_file:
+      - ./services/inventory/.env
+    command: ["npm", "run", "consumer"]
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  order:
+    build:
+      context: .
+      dockerfile: services/order/Dockerfile
+    ports:
+      - "3004:3004"
+    environment:
+      PORT: 3004
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  reward:
+    build:
+      context: .
+      dockerfile: services/reward/Dockerfile
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: 3005
+
+  place-order:
+    build:
+      context: .
+      dockerfile: composite/place-order/Dockerfile
+    ports:
+      - "4001:4001"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PAYMENT_SERVICE_URL: http://payment:3003
+      ORDER_SERVICE_URL: http://order:3004
+      NOTIFICATION_SERVICE_URL: http://notification:3006
+      REWARD_SERVICE_URL: http://reward:3005
+    env_file:
+      - ./composite/place-order/.env
+
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    ports:
+      - "3006:3006"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PORT: 3006
+    env_file:
+      - ./services/notification/.env
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  refund-management:
+    build:
+      context: .
+      dockerfile: services/refund-management/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      payment:
+        condition: service_started
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PAYMENT_SERVICE_URL: http://payment:3003
+
+  recommendation:
+    build:
+      context: .
+      dockerfile: composite/recommendation/Dockerfile
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      ORDER_SERVICE_URL: http://order:3004
+      INVENTORY_SERVICE_URL: http://inventory:3000
+      REWARD_SERVICE_URL: http://reward:3005
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    env_file:
+      - ./composite/recommendation/.env
+
+  upload-listing:
+    build:
+      context: .
+      dockerfile: composite/upload-listing/Dockerfile
+    ports:
+      - "4002:4002"
+    environment:
+      PORT: 4002
+      INVENTORY_SERVICE_URL: http://inventory:3000
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+
+  remove-expired:
+    build:
+      context: .
+      dockerfile: composite/remove-expired/Dockerfile
+    ports:
+      - "4003:4003"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: 4003
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      INVENTORY_SERVICE_URL: http://inventory:3000
+      PAYMENT_SERVICE_URL: http://payment:3003
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
+
+  checkout:
+    build:
+      context: .
+      dockerfile: composite/checkout/Dockerfile
+    ports:
+      - "4004:4004"
+    environment:
+      PORT: 4004
+      ORDER_SERVICE_URL: http://order:3004
+      PAYMENT_SERVICE_URL: http://payment:3003
+      REWARD_SERVICE_URL: http://reward:3005
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_ACCOUNT_SERVICE_URL: http://localhost:8000
+      VITE_INVENTORY_SERVICE_URL: http://localhost:8000
+      VITE_PLACE_ORDER_SERVICE_URL: http://localhost:8000
+      VITE_RECOMMENDATION_SERVICE_URL: http://localhost:8000
+      VITE_ORDER_SERVICE_URL: http://localhost:8000
+      VITE_S3_BUCKET: foodrescue-listing-292659698564-ap-southeast-1-an
+      VITE_AWS_REGION: ap-southeast-1
+    depends_on:
+      - kong
