@@ -405,6 +405,7 @@ export default function UserCart() {
     try {
       setBusyId(listingId);
       await removeFromCart(listingId);
+      setCartNotice('Item removed from your cart.');
     } catch (e) {
       setCheckoutError(e?.message || 'Failed to remove item');
     } finally {
@@ -903,6 +904,7 @@ export default function UserCart() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

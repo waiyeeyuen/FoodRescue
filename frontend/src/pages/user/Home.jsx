@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  FlameIcon,
   MinusIcon,
   PlusIcon,
   SearchIcon,
@@ -34,7 +35,23 @@ function normalizeImpactSnapshot(impact) {
     co2KgSaved: Number((safeImpact.co2KgSaved ?? safeImpact.co2) || 0),
     waterLitersSaved: Number((safeImpact.waterLitersSaved ?? safeImpact.water) || 0),
     daysSaved: Number((safeImpact.daysSaved ?? safeImpact.currentStreakDays ?? safeImpact.days) || 0),
+    lastSuccessfulOrderAt: safeImpact.lastSuccessfulOrderAt || null,
+    completedDayKeys: Array.isArray(safeImpact.completedDayKeys)
+      ? safeImpact.completedDayKeys.map((value) => String(value))
+      : [],
   };
+}
+
+function toSingaporeDayKey(value) {
+  const parsed = value ? new Date(value) : new Date();
+  if (Number.isNaN(parsed.getTime())) return '';
+
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Singapore',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(parsed);
 }
 
 function getField(item, ...keys) {
@@ -248,8 +265,6 @@ export default function UserHome() {
   const [selectedItem, setSelectedItem] = useState(null);
   const [orderQty, setOrderQty] = useState(0);
   const [pickupTime, setPickupTime] = useState('');
-  const [addConfirmOpen, setAddConfirmOpen] = useState(false);
-  const [addConfirmMessage, setAddConfirmMessage] = useState('');
   const [addCartError, setAddCartError] = useState(null);
 
   useEffect(() => {
@@ -488,6 +503,48 @@ export default function UserHome() {
     () => normalizeImpactSnapshot(impactProfile),
     [impactProfile]
   );
+  const streakData = useMemo(() => {
+    const fallbackDayKey = impactSummary.lastSuccessfulOrderAt
+      ? toSingaporeDayKey(impactSummary.lastSuccessfulOrderAt)
+      : '';
+    const dayKeys = Array.isArray(impactSummary.completedDayKeys)
+      ? [...new Set([...impactSummary.completedDayKeys.filter(Boolean), ...(fallbackDayKey ? [fallbackDayKey] : [])])]
+      : fallbackDayKey
+        ? [fallbackDayKey]
+        : [];
+    const normalizedSet = new Set(dayKeys);
+
+    const recentDays = Array.from({ length: 5 }, (_, index) => {
+      const date = new Date();
+      date.setDate(date.getDate() - (4 - index));
+      const key = toSingaporeDayKey(date);
+      return {
+        key,
+        active: normalizedSet.has(key),
+        label: date.toLocaleDateString([], { weekday: 'short' }),
+      };
+    });
+
+    let streak = 0;
+    const cursor = new Date();
+
+    while (normalizedSet.has(toSingaporeDayKey(cursor))) {
+      streak += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    if (streak === 0) {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      while (normalizedSet.has(toSingaporeDayKey(yesterday))) {
+        streak += 1;
+        yesterday.setDate(yesterday.getDate() - 1);
+      }
+    }
+
+    return { recentDays, streak };
+  }, [impactSummary]);
 
   const handleCardClick = (item) => {
     setSelectedItem(item);
@@ -566,8 +623,6 @@ export default function UserHome() {
     try {
       await addToCart({ item: selectedItem, quantity: orderQty, pickupTime });
       setDetailsOpen(false);
-      setAddConfirmMessage(`${orderQty} × ${selected.itemName} added to cart`);
-      setAddConfirmOpen(true);
     } catch (e) {
       setAddCartError(e?.message || 'Failed to add to cart');
     }
@@ -683,7 +738,32 @@ export default function UserHome() {
                     {card.value}
                     <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
                   </p>
-                  <p className="mt-2 text-sm text-slate-500">{card.note}</p>
+                  {card.label === 'Days saved' ? (
+                    <div className="mt-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-xs font-medium text-slate-400">
+                          {streakData.streak} day{streakData.streak === 1 ? '' : 's'} in a row
+                        </p>
+                        <div className="flex items-center gap-2">
+                          {streakData.recentDays.map((day) => (
+                            <div
+                              key={day.key}
+                              title={day.label}
+                              className={`flex h-8 w-8 items-center justify-center rounded-full ${
+                                day.active
+                                  ? 'bg-orange-100 text-orange-600 ring-1 ring-orange-200'
+                                  : 'bg-slate-100 text-slate-300 ring-1 ring-slate-200'
+                              }`}
+                            >
+                              <FlameIcon className="h-3.5 w-3.5" />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-500">{card.note}</p>
+                  )}
                 </section>
               ))}
             </section>
@@ -880,6 +960,7 @@ export default function UserHome() {
           )}
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }

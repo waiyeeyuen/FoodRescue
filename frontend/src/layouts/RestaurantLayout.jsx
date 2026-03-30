@@ -33,12 +33,11 @@ function RestaurantLayout() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
   return (
     <div className="site-shell">
       <header className="site-header sticky top-0 z-40">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex min-h-[5.25rem] items-center justify-between gap-4">
+          <div className="relative flex min-h-[5.25rem] items-center justify-between gap-4">
             <Link to="/restaurant/listings" className="flex items-center gap-3">
               <div className="site-brand-mark flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/80">
                 <img
@@ -54,7 +53,7 @@ function RestaurantLayout() {
               </div>
             </Link>
 
-            <nav className="hidden items-center gap-2 rounded-full border border-white/70 bg-white/55 p-1.5 shadow-[0_18px_34px_-28px_rgba(24,36,33,0.45)] backdrop-blur-sm md:flex">
+            <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-full border border-white/70 bg-white/55 p-1.5 shadow-[0_18px_34px_-28px_rgba(24,36,33,0.45)] backdrop-blur-sm md:flex">
               {navItems.map((item) => (
                 <Link
                   key={item.path}
@@ -87,13 +86,6 @@ function RestaurantLayout() {
                       <p className="text-sm font-medium text-slate-900">{user?.restaurantName}</p>
                       <p className="text-xs text-slate-500">{user?.email}</p>
                     </div>
-                    <Link
-                      to="/restaurant/settings"
-                      className="site-dropdown-link mx-2 my-1 block px-4 py-2 text-sm"
-                      onClick={() => setProfileMenuOpen(false)}
-                    >
-                      Profile
-                    </Link>
                     <Link
                       to="/restaurant/settings"
                       className="site-dropdown-link mx-2 my-1 block px-4 py-2 text-sm"

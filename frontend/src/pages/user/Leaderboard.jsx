@@ -10,49 +10,20 @@ function formatMetricValue(metric, value) {
   return String(numeric);
 }
 
-const PAGE_SIZE = 5;
-
 function LeaderboardPanel({ title, description, metricKey, data }) {
   const top = Array.isArray(data?.top) ? data.top : [];
-  const currentUser = data?.currentUser || null;
-  const [page, setPage] = useState(1);
-  const pageCount = Math.max(1, Math.ceil(top.length / PAGE_SIZE));
-
-  useEffect(() => {
-    setPage(1);
-  }, [metricKey, top.length]);
-
-  const pagedTop = useMemo(() => {
-    const start = (page - 1) * PAGE_SIZE;
-    return top.slice(start, start + PAGE_SIZE);
-  }, [page, top]);
 
   return (
     <section className="rounded-[30px] border border-white/70 bg-white/78 p-5 shadow-[0_24px_50px_-32px_rgba(24,36,33,0.45)]">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-            {title}
-          </p>
-          <p className="mt-2 text-sm text-slate-600">{description}</p>
-        </div>
-        {currentUser && (
-          <div className="rounded-[20px] bg-[rgba(20,95,89,0.08)] px-4 py-3 text-right">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-              Your rank
-            </p>
-            <p className="mt-1 text-2xl font-semibold text-[var(--brand-ink)]">
-              #{currentUser.rank}
-            </p>
-            <p className="text-xs text-slate-500">
-              {formatMetricValue(metricKey, currentUser.value)}
-            </p>
-          </div>
-        )}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          {title}
+        </p>
+        <p className="mt-2 text-sm text-slate-600">{description}</p>
       </div>
 
       <div className="mt-5 space-y-3">
-        {pagedTop.map((entry) => (
+        {top.map((entry) => (
           <div
             key={`${metricKey}-${entry.userId}`}
             className="flex items-center justify-between rounded-[22px] border border-white/70 bg-white/72 px-4 py-3"
@@ -63,7 +34,7 @@ function LeaderboardPanel({ title, description, metricKey, data }) {
               </div>
               <div>
                 <p className="text-sm font-semibold text-slate-900">{entry.username}</p>
-                <p className="text-xs text-slate-500">Impact leaderboard</p>
+                <p className="text-xs text-slate-500">Top 10</p>
               </div>
             </div>
             <p className="text-sm font-semibold text-slate-900">
@@ -72,32 +43,6 @@ function LeaderboardPanel({ title, description, metricKey, data }) {
           </div>
         ))}
       </div>
-
-      {pageCount > 1 && (
-        <div className="mt-5 flex items-center justify-between text-sm text-slate-600">
-          <span>
-            Page {page} of {pageCount}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={page === 1}
-              className="rounded-full border border-slate-200 px-3 py-1.5 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-              disabled={page === pageCount}
-              className="rounded-full border border-slate-200 px-3 py-1.5 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      )}
     </section>
   );
 }
@@ -171,13 +116,12 @@ export default function UserLeaderboard() {
       <section className="spotlight-panel overflow-hidden rounded-[34px] p-6 sm:p-8">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-end">
           <div>
-            <span className="hero-kicker">Impact Leaderboard</span>
+            <span className="hero-kicker">Top 10 Leaderboard</span>
             <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
-              See who is saving the most CO2 and water.
+              See the top 10 users by CO2 and water saved.
             </h1>
             <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-              Rankings update from completed pickups only, so the leaderboard reflects real rescue
-              impact rather than checkout attempts.
+              Rankings update from completed pickups only, so the board reflects real rescue impact.
             </p>
           </div>
 

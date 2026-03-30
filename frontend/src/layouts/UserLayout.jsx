@@ -167,7 +167,7 @@ function UserLayout() {
       {/* Header */}
       <header className="site-header sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex min-h-[5.25rem] items-center justify-between gap-4">
+          <div className="relative flex min-h-[5.25rem] items-center justify-between gap-4">
             {/* Logo */}
             <Link to="/" className="flex items-center gap-3">
               <div className="site-brand-mark flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/80">
@@ -185,7 +185,7 @@ function UserLayout() {
             </Link>
 
             {/* Desktop Navigation */}
-            <nav className="hidden md:flex items-center gap-2 rounded-full border border-white/70 bg-white/55 p-1.5 shadow-[0_18px_34px_-28px_rgba(24,36,33,0.45)] backdrop-blur-sm">
+            <nav className="absolute left-1/2 hidden -translate-x-1/2 md:flex items-center gap-2 rounded-full border border-white/70 bg-white/55 p-1.5 shadow-[0_18px_34px_-28px_rgba(24,36,33,0.45)] backdrop-blur-sm">
               {navItems.map((item) => (
                 <Link
                   key={item.path}
