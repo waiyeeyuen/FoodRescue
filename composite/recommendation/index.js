@@ -260,7 +260,7 @@ app.get("/recommendations/:userId", async (req, res) => {
   const { userId } = req.params;
 
   const includeActive = parseBool(req.query.includeActive, true);
-  const maxListings = Math.max(1, Math.min(200, Number(req.query.maxListings ?? 20) || 20));
+  const maxListings = Math.max(1, Math.min(200, Number(req.query.maxListings ?? 4) || 4));
   const maxSignals = Math.max(1, Math.min(20, Number(req.query.maxSignals ?? 5) || 5));
 
   const requestedListingIds = normalizeCsv(

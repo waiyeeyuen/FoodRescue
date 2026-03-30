@@ -374,16 +374,36 @@ export default function RestaurantListings() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">Listings</h1>
-          <p className="text-slate-600 mt-2">
-            View everything you’ve published (including expired).
-          </p>
+      <div className="spotlight-panel overflow-hidden rounded-[32px] p-6 sm:p-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-end">
+          <div>
+            <span className="hero-kicker">Listing Studio</span>
+            <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
+              Make your rescue listings feel premium at a glance.
+            </h1>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+              Publish, review, and retire items from a calmer surface that feels closer to a real
+              merchant product than a plain dashboard table.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+            <div className="rounded-[24px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Active
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900">{counts.active}</p>
+            </div>
+            <div className="rounded-[24px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Expired
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900">{counts.expired}</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="rounded-2xl bg-card ring-1 ring-border overflow-hidden">
+      <div className="overflow-hidden rounded-[28px] border border-white/70 bg-card/90 ring-1 ring-border shadow-[0_24px_50px_-32px_rgba(24,36,33,0.45)] backdrop-blur-sm">
         <div className="p-4 sm:p-5 border-b border-border flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-base font-semibold">Your Listings</h2>

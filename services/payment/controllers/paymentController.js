@@ -12,6 +12,17 @@ function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
 }
 
+function hasRefundState(payment) {
+  const status = String(payment?.status || "").toLowerCase();
+  const refundStatus = String(payment?.refundStatus || "").toLowerCase();
+
+  if (["refunded", "partially_refunded"].includes(status)) {
+    return true;
+  }
+
+  return ["pending", "succeeded", "completed"].includes(refundStatus);
+}
+
 async function getStripeLineItemsAsPaymentItems(sessionId) {
   const lineItems = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 });
   const items = (lineItems?.data || [])
@@ -288,12 +299,27 @@ export async function confirmCheckoutSession(req, res) {
       return res.status(400).json({ error: 'Missing paymentId/orderId in Stripe session metadata' });
     }
 
-    await createOrUpdatePayment(paymentId, {
-      webhookEventType: 'confirm-session',
-      status: 'paid',
+    const existingPayment = await getPaymentByIdFromDb(paymentId);
+    const preserveRefundState = hasRefundState(existingPayment);
+    const paymentUpdates = {
       stripeSessionId: session.id,
-      stripePaymentIntentId: session.payment_intent || null,
-    });
+      stripePaymentIntentId:
+        session.payment_intent || existingPayment?.stripePaymentIntentId || null,
+    };
+
+    if (!preserveRefundState) {
+      paymentUpdates.webhookEventType = 'confirm-session';
+      paymentUpdates.status = 'paid';
+    }
+
+    await createOrUpdatePayment(paymentId, paymentUpdates);
+
+    if (preserveRefundState) {
+      console.log(
+        '[Payment] confirm-session preserved existing refund state for paymentId:',
+        paymentId
+      );
+    }
 
     const paymentRecord = await retryGetPayment(paymentId);
     const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
@@ -302,7 +328,14 @@ export async function confirmCheckoutSession(req, res) {
       return res.status(500).json({ error: 'Failed to publish stock check', reason: result.reason });
     }
 
-    return res.json({ success: true, paymentId, orderId, ...result });
+    return res.json({
+      success: true,
+      paymentId,
+      orderId,
+      paymentStatus: paymentRecord?.status || existingPayment?.status || 'paid',
+      refundStatus: paymentRecord?.refundStatus || existingPayment?.refundStatus || '',
+      ...result
+    });
   } catch (error) {
     console.error('[Payment] ❌ confirmCheckoutSession error:', error);
     return res.status(500).json({ error: 'Failed to confirm checkout session', details: error?.message || String(error) });
@@ -338,13 +371,26 @@ export async function handleStripeWebhook(req, res) {
         console.log('==============================');
 
         if (paymentId) {
-          await createOrUpdatePayment(paymentId, {
-            webhookEventType: event.type,
-            status: "paid",
+          const existingPayment = await getPaymentByIdFromDb(paymentId);
+          const preserveRefundState = hasRefundState(existingPayment);
+          const paymentUpdates = {
             stripeSessionId: session.id,
-            stripePaymentIntentId: session.payment_intent || null
-          });
-          console.log('[Webhook] ✅ Payment updated to "paid"');
+            stripePaymentIntentId:
+              session.payment_intent || existingPayment?.stripePaymentIntentId || null
+          };
+
+          if (!preserveRefundState) {
+            paymentUpdates.webhookEventType = event.type;
+            paymentUpdates.status = "paid";
+          }
+
+          await createOrUpdatePayment(paymentId, paymentUpdates);
+
+          if (preserveRefundState) {
+            console.log('[Webhook] Refund state already exists; skipping paid overwrite');
+          } else {
+            console.log('[Webhook] ✅ Payment updated to "paid"');
+          }
         } else {
           console.log('[Webhook] ❌ No paymentId in metadata — skipping payment update');
         }
@@ -398,10 +444,18 @@ export async function handleStripeWebhook(req, res) {
           const allPayments = await getAllPaymentsFromDb();
           const matched = allPayments.find(p => p.stripePaymentIntentId === paymentIntentId);
           if (matched) {
+            const refundedAmount = Number(charge.amount_refunded ?? matched.refundAmount ?? 0);
+            const originalAmount = Number(charge.amount ?? matched.amountTotal ?? 0);
+            const refundId = charge.refunds?.data?.[0]?.id || matched.refundId || "";
+
             await updatePayment(matched.paymentId, {
               webhookEventType: event.type,
-              status: "refunded",
+              status: refundedAmount > 0 && originalAmount > 0 && refundedAmount < originalAmount
+                ? "partially_refunded"
+                : "refunded",
               refundStatus: "succeeded",
+              refundAmount: refundedAmount || matched.amountTotal || 0,
+              refundId,
               refundCompletedAt: admin.firestore.FieldValue.serverTimestamp()
             });
             console.log('[Webhook] ✅ Refund recorded for paymentId:', matched.paymentId);

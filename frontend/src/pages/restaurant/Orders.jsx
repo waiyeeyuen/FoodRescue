@@ -75,7 +75,8 @@ function formatDateTime(value, createdAt) {
 
 function normalizeStatus(value, fallback = 'new') {
   const raw = String(value || fallback).trim().toLowerCase();
-  if (['new', 'preparing', 'completed'].includes(raw)) return raw;
+  if (raw === 'preparing') return 'ready';
+  if (['new', 'ready', 'completed'].includes(raw)) return raw;
   return fallback;
 }
 
@@ -87,7 +88,7 @@ export default function RestaurantOrders() {
 
   const [statusTab, setStatusTab] = useState('new');
   const [orders, setOrders] = useState([]);
-  const [counts, setCounts] = useState({ new: 0, preparing: 0, completed: 0, all: 0 });
+  const [counts, setCounts] = useState({ new: 0, ready: 0, completed: 0, all: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatingKey, setUpdatingKey] = useState('');
@@ -124,7 +125,7 @@ export default function RestaurantOrders() {
           setOrders(Array.isArray(data?.orders) ? data.orders : []);
           setCounts({
             new: Number(data?.counts?.new || 0),
-            preparing: Number(data?.counts?.preparing || 0),
+            ready: Number(data?.counts?.ready || 0),
             completed: Number(data?.counts?.completed || 0),
             all: Number(data?.counts?.all || 0),
           });
@@ -221,17 +222,42 @@ export default function RestaurantOrders() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900">Orders</h1>
-        <p className="mt-2 text-slate-600">
-          View newly confirmed pickups and move them through fulfillment.
-        </p>
+      <div className="spotlight-panel overflow-hidden rounded-[32px] p-6 sm:p-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-end">
+          <div>
+            <span className="hero-kicker">Fulfillment Board</span>
+            <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
+              Keep every pickup moving with less noise.
+            </h1>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+              New orders, ready pickups, and completed collections stay visible without feeling like
+              a generic admin table.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+            {[
+              { label: 'New', value: counts.new },
+              { label: 'Ready', value: counts.ready },
+              { label: 'Completed', value: counts.completed },
+            ].map((card) => (
+              <div
+                key={card.label}
+                className="rounded-[24px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]"
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {card.label}
+                </p>
+                <p className="mt-2 text-3xl font-semibold text-slate-900">{card.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         {[
           { key: 'new', label: 'New', count: counts.new },
-          { key: 'preparing', label: 'Preparing', count: counts.preparing },
+          { key: 'ready', label: 'Ready', count: counts.ready },
           { key: 'completed', label: 'Completed', count: counts.completed },
         ].map((tab) => (
           <button
@@ -277,10 +303,10 @@ export default function RestaurantOrders() {
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-[28px] border border-white/70 bg-white/80 shadow-[0_24px_50px_-32px_rgba(24,36,33,0.45)] backdrop-blur-sm">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200">
-              <thead className="bg-slate-50">
+              <thead className="bg-white/70">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Item</th>
                   <th className="px-4 py-3">Qty</th>
@@ -331,12 +357,12 @@ export default function RestaurantOrders() {
                           className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
                             itemStatus === 'completed'
                               ? 'bg-emerald-100 text-emerald-700'
-                              : itemStatus === 'preparing'
+                              : itemStatus === 'ready'
                                 ? 'bg-blue-100 text-blue-700'
                                 : 'bg-yellow-100 text-yellow-800'
                           }`}
                         >
-                          {itemStatus.charAt(0).toUpperCase() + itemStatus.slice(1)}
+                          {itemStatus === 'ready' ? 'Ready' : itemStatus.charAt(0).toUpperCase() + itemStatus.slice(1)}
                         </span>
                       </td>
                       <td className="px-4 py-4">
@@ -347,9 +373,9 @@ export default function RestaurantOrders() {
                               size="sm"
                               variant="outline"
                               disabled={isUpdating}
-                              onClick={() => updateItemStatus(order, 'preparing')}
+                              onClick={() => updateItemStatus(order, 'ready')}
                             >
-                              {isUpdating ? 'Updating...' : 'Mark Preparing'}
+                              {isUpdating ? 'Updating...' : 'Mark Ready'}
                             </Button>
                           )}
                           {itemStatus !== 'completed' && (

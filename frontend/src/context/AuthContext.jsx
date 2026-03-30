@@ -51,10 +51,6 @@ function initializeUserFromStorage() {
   return null;
 }
 
-function getFavoriteStorageKey(userId) {
-  return userId ? `favorites_${userId}` : 'favorites_guest';
-}
-
 function getOrderStorageKey(userId) {
   return userId ? `orders_${userId}` : 'orders_guest';
 }
@@ -158,9 +154,6 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => initialUser);
   const [cart, setCart] = useState([]);
   const [cartLoading, setCartLoading] = useState(false);
-  const [favorites, setFavorites] = useState(() =>
-    readArrayFromStorage(getFavoriteStorageKey(initialUser?.id))
-  );
   const [orders, setOrders] = useState(() =>
     dedupeOrders(readArrayFromStorage(getOrderStorageKey(initialUser?.id)))
   );
@@ -179,7 +172,6 @@ export function AuthProvider({ children }) {
     [cart]
   );
 
-  const favoriteCount = useMemo(() => favorites.length, [favorites]);
   const orderCount = useMemo(() => orders.length, [orders]);
 
   const getCartQuantityForListing = useCallback(
@@ -386,33 +378,6 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const isFavorite = useCallback(
-    (itemOrId) => {
-      const key = typeof itemOrId === 'string' ? itemOrId : getListingKey(itemOrId);
-      return favorites.some((fav) => getListingKey(fav) === key);
-    },
-    [favorites]
-  );
-
-  const toggleFavorite = useCallback((item) => {
-    const key = getListingKey(item);
-
-    setFavorites((prev) => {
-      const exists = prev.some((fav) => getListingKey(fav) === key);
-      if (exists) return prev.filter((fav) => getListingKey(fav) !== key);
-      return [...prev, item];
-    });
-  }, []);
-
-  const removeFavorite = useCallback((itemOrId) => {
-    const key = typeof itemOrId === 'string' ? itemOrId : getListingKey(itemOrId);
-    setFavorites((prev) => prev.filter((fav) => getListingKey(fav) !== key));
-  }, []);
-
-  const clearFavorites = useCallback(() => {
-    setFavorites([]);
-  }, []);
-
   const addOrder = useCallback(async (order) => {
     if (!order) return null;
     setOrders((prev) => dedupeOrders([order, ...prev]));
@@ -472,14 +437,6 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(getFavoriteStorageKey(user?.id), JSON.stringify(favorites));
-    } catch (e) {
-      console.error('Failed to save favorites:', e);
-    }
-  }, [favorites, user?.id]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem(getOrderStorageKey(user?.id), JSON.stringify(orders));
     } catch (e) {
       console.error('Failed to save orders:', e);
@@ -514,7 +471,6 @@ export function AuthProvider({ children }) {
     localStorage.setItem('token', token);
     localStorage.setItem('user', JSON.stringify(nextUser));
     setUser(nextUser);
-    setFavorites(readArrayFromStorage(getFavoriteStorageKey(nextUser?.id)));
     setOrders(dedupeOrders(readArrayFromStorage(getOrderStorageKey(nextUser?.id))));
 
     if (nextUser?.id && !nextUser?.restaurantName) {
@@ -553,7 +509,6 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('user');
     setUser(null);
     setCart([]);
-    setFavorites([]);
     setOrders([]);
   };
 
@@ -574,12 +529,6 @@ export function AuthProvider({ children }) {
         removeFromCart,
         updateCartItem,
         clearCart,
-        favorites,
-        favoriteCount,
-        toggleFavorite,
-        removeFavorite,
-        isFavorite,
-        clearFavorites,
         orders,
         orderCount,
         addOrder,

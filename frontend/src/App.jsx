@@ -7,16 +7,14 @@ import RestaurantLayout from './layouts/RestaurantLayout';
 import AuthPage from './pages/AuthPage';
 
 import UserHome from './pages/user/Home';
-import UserMap from './pages/user/Map';
+import UserLeaderboard from './pages/user/Leaderboard';
 import UserOrders from './pages/user/Orders';
-import UserFavorites from './pages/user/Favorites';
 import UserProfile from './pages/user/Profile';
 import UserCart from './pages/user/Cart';
 import PaymentSuccessPage from './pages/user/PaymentSuccess';
 
 import RestaurantListings from './pages/restaurant/Listings';
 import RestaurantOrders from './pages/restaurant/Orders';
-import RestaurantPayouts from './pages/restaurant/Payouts';
 import RestaurantProfile from './pages/restaurant/Profile';
 import RestaurantSettings from './pages/restaurant/Settings';
 
@@ -52,10 +50,11 @@ function App() {
         }
       >
         <Route index element={<UserHome />} />
-        <Route path='map' element={<UserMap />} />
+        <Route path='map' element={<Navigate to='/' replace />} />
+        <Route path='leaderboard' element={<UserLeaderboard />} />
         <Route path='search' element={<Navigate to='/' replace />} />
         <Route path='orders' element={<UserOrders />} />
-        <Route path='favorites' element={<UserFavorites />} />
+        <Route path='favorites' element={<Navigate to='/' replace />} />
         <Route path='cart' element={<UserCart />} />
         <Route path='profile' element={<UserProfile />} />
         <Route path='payment-success' element={<PaymentSuccessPage />} /> {/* ✅ new */}
@@ -72,7 +71,7 @@ function App() {
         <Route index element={<Navigate to='listings' replace />} />
         <Route path='listings' element={<RestaurantListings />} />
         <Route path='orders' element={<RestaurantOrders />} />
-        <Route path='payouts' element={<RestaurantPayouts />} />
+        <Route path='payouts' element={<Navigate to='profile' replace />} />
         <Route path='profile' element={<RestaurantProfile />} />
         <Route path='settings' element={<RestaurantSettings />} />
       </Route>

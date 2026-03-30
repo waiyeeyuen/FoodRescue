@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  HeartIcon,
   MinusIcon,
   PlusIcon,
   SearchIcon,
   SparklesIcon,
   XIcon,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@/context/AuthContext';
 import { Badge } from '@/components/ui/badge';
@@ -27,7 +25,17 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
-const MAX_RECOMMENDATIONS = 6;
+const MAX_RECOMMENDATIONS = 4;
+
+function normalizeImpactSnapshot(impact) {
+  const safeImpact = impact && typeof impact === 'object' ? impact : {};
+  return {
+    mealsRescued: Number(safeImpact.mealsRescued || 0),
+    co2KgSaved: Number((safeImpact.co2KgSaved ?? safeImpact.co2) || 0),
+    waterLitersSaved: Number((safeImpact.waterLitersSaved ?? safeImpact.water) || 0),
+    daysSaved: Number((safeImpact.daysSaved ?? safeImpact.currentStreakDays ?? safeImpact.days) || 0),
+  };
+}
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -109,8 +117,7 @@ function ListingCard({
   item,
   aiRecommended = false,
   aiReason = null,
-  isFavorited = false,
-  onToggleFavorite,
+  compact = false,
 }) {
   const itemName = getField(item, 'itemName', 'ItemName', 'name', 'Name') ?? 'Untitled';
   const description = getField(item, 'description', 'Description');
@@ -136,7 +143,7 @@ function ListingCard({
         <img
           src={imageSrc || '/logo.png'}
           alt={itemName}
-          className={`h-40 w-full ${imageSrc ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
+          className={`${compact ? 'h-24 sm:h-[6.5rem]' : 'h-40'} w-full ${imageSrc ? 'object-cover' : 'bg-muted p-8 object-contain'}`}
           loading="lazy"
         />
 
@@ -149,20 +156,6 @@ function ListingCard({
             -{discount}%
           </div>
         )}
-
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleFavorite?.(item);
-          }}
-          className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/90 shadow-md ring-1 ring-black/5 transition hover:scale-105 hover:bg-white"
-          aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-        >
-          <HeartIcon
-            className={`size-4 ${isFavorited ? 'fill-red-500 text-red-500' : 'text-slate-700'}`}
-          />
-        </button>
 
         {aiRecommended && (
           <TooltipProvider>
@@ -179,16 +172,16 @@ function ListingCard({
                 </Badge>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[180px] text-center">
-                ✨ {aiReason || 'Recommended for you'}
+                {aiReason ? `${aiReason}. Based on past order history.` : 'Based on past order history.'}
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         )}
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 p-4">
+      <div className={`flex flex-1 flex-col ${compact ? 'gap-1 p-3' : 'gap-2 p-4'}`}>
         <div className="flex items-start justify-between gap-2">
-          <h3 className="line-clamp-2 font-semibold leading-tight">{itemName}</h3>
+          <h3 className={`line-clamp-2 font-semibold leading-tight ${compact ? 'text-[0.98rem]' : ''}`}>{itemName}</h3>
           {cuisineType && (
             <span className="whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {cuisineType}
@@ -196,10 +189,10 @@ function ListingCard({
           )}
         </div>
 
-        {description && <p className="line-clamp-2 text-sm text-muted-foreground">{description}</p>}
+        {!compact && description && <p className="line-clamp-2 text-sm text-muted-foreground">{description}</p>}
 
-        <div className="mt-auto flex items-center gap-2 pt-2">
-          <span className="text-lg font-bold">
+        <div className={`mt-auto flex items-center gap-2 ${compact ? 'pt-0.5' : 'pt-2'}`}>
+          <span className={`${compact ? 'text-[0.95rem]' : 'text-lg'} font-bold`}>
             ${Number.isFinite(price) ? price.toFixed(2) : '0.00'}
           </span>
           {discount > 0 && Number.isFinite(originalPrice) && (
@@ -209,7 +202,7 @@ function ListingCard({
           )}
         </div>
 
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className={`flex items-center justify-between text-muted-foreground ${compact ? 'text-[11px]' : 'text-xs'}`}>
           <span>Qty: {remainingQuantity}</span>
           {expiryDate && !Number.isNaN(expiryDate.getTime()) ? (
             <span className={isExpiringSoon ? 'font-semibold text-red-500' : ''}>
@@ -220,7 +213,7 @@ function ListingCard({
           )}
         </div>
 
-        {restaurantName && <p className="truncate text-xs text-muted-foreground">{restaurantName}</p>}
+        {restaurantName && <p className={`truncate text-muted-foreground ${compact ? 'text-[11px]' : 'text-xs'}`}>{restaurantName}</p>}
       </div>
     </div>
   );
@@ -231,13 +224,11 @@ export default function UserHome() {
     import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
   const recommendationServiceUrl =
     import.meta.env.VITE_RECOMMENDATION_SERVICE_URL || 'http://localhost:4000';
-
-  const navigate = useNavigate();
+  const accountServiceUrl =
+    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
   const {
     user,
     addToCart,
-    toggleFavorite,
-    isFavorite,
     getRemainingStockForListing,
     canAddToCart,
     getCartQuantityForListing,
@@ -250,6 +241,7 @@ export default function UserHome() {
   const [recommendedListings, setRecommendedListings] = useState([]);
   const [geminiReasoning, setGeminiReasoning] = useState('');
   const [geminiUsed, setGeminiUsed] = useState(false);
+  const [impactProfile, setImpactProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -259,6 +251,46 @@ export default function UserHome() {
   const [addConfirmOpen, setAddConfirmOpen] = useState(false);
   const [addConfirmMessage, setAddConfirmMessage] = useState('');
   const [addCartError, setAddCartError] = useState(null);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setImpactProfile(null);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    async function loadImpactProfile() {
+      try {
+        const response = await fetch(
+          `${accountServiceUrl}/account/${encodeURIComponent(user.id)}`,
+          { signal: controller.signal }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data?.error || 'Failed to load impact profile');
+        }
+
+        if (!controller.signal.aborted) {
+          setImpactProfile({
+            ...(data?.impact || {}),
+            co2: data?.co2 ?? data?.impact?.co2KgSaved ?? 0,
+            water: data?.water ?? data?.impact?.waterLitersSaved ?? 0,
+            days: data?.days ?? data?.impact?.daysSaved ?? 0,
+          });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.error('Failed to load impact profile:', error);
+          setImpactProfile(null);
+        }
+      }
+    }
+
+    loadImpactProfile();
+
+    return () => controller.abort();
+  }, [accountServiceUrl, user?.id]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -293,7 +325,7 @@ export default function UserHome() {
         if (user?.id) {
           try {
             const recRes = await fetch(
-              `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}`,
+              `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}?maxListings=${MAX_RECOMMENDATIONS}`,
               { signal: controller.signal }
             );
 
@@ -431,6 +463,32 @@ export default function UserHome() {
     [visibleListings, recommendedIdSet]
   );
 
+  const heroStats = useMemo(() => {
+    const restaurantCount = new Set(
+      stockAdjustedListings
+        .map((item) => getField(item, 'restaurantName', 'RestaurantName'))
+        .filter(Boolean)
+    ).size;
+
+    return [
+      {
+        label: 'Live listings',
+        value: stockAdjustedListings.length,
+        tone: 'text-[var(--brand-ink)]',
+      },
+      {
+        label: 'Rescue kitchens',
+        value: restaurantCount,
+        tone: 'text-[var(--brand-coral)]',
+      },
+    ];
+  }, [stockAdjustedListings]);
+
+  const impactSummary = useMemo(
+    () => normalizeImpactSnapshot(impactProfile),
+    [impactProfile]
+  );
+
   const handleCardClick = (item) => {
     setSelectedItem(item);
     setDetailsOpen(true);
@@ -517,41 +575,6 @@ export default function UserHome() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900">Homepage</h1>
-        <p className="mt-2 text-slate-600">Good food, saved in time.</p>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <div className="relative max-w-xl overflow-hidden rounded-xl">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
-
-          <input
-            ref={inputRef}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by item, restaurant, cuisine..."
-            className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
-          />
-
-          {searchQuery.trim() !== '' && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery('');
-                requestAnimationFrame(() => {
-                  inputRef.current?.focus();
-                });
-              }}
-              className="absolute right-2 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Clear search"
-            >
-              <XIcon className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
       {loading ? (
         <div className="flex items-center justify-center gap-3 py-16">
           <Spinner className="size-6" />
@@ -565,20 +588,118 @@ export default function UserHome() {
         <p className="text-sm text-muted-foreground">No matches for your search.</p>
       ) : (
         <div className="flex flex-col gap-8">
-          {visibleRecommendedListings.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <div>
-                <h2 className="flex items-center gap-2 text-xl font-semibold text-slate-900">
-                  <SparklesIcon className="size-5 text-violet-600" />
-                  Recommended for you
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  Personalized picks powered by Gemini
-                </p>
-              </div>
+          <div className="flex flex-col gap-4">
+            <section className="spotlight-panel overflow-hidden rounded-[30px] p-5 sm:p-6">
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_15rem] lg:items-center">
+                <div>
+                  <span className="hero-kicker">
+                    {user?.username ? `Welcome back, ${user.username}` : 'Daily rescue drop'}
+                  </span>
+                  <h1 className="hero-title mt-4 max-w-4xl text-4xl text-slate-900 sm:text-5xl lg:text-[4rem] lg:leading-[0.94] xl:text-[4.6rem]">
+                    Rescue great food before the clock runs out.
+                  </h1>
+                  <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+                    Browse nearby surplus meals, lock in pickup, and build a stronger rescue habit
+                    one order at a time.
+                  </p>
 
-              <div className="overflow-x-auto pb-2">
-                <div className="flex min-w-max gap-4">
+                  <div className="relative mt-5 max-w-2xl overflow-hidden rounded-[22px]">
+                    <SearchIcon className="pointer-events-none absolute left-4 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
+
+                    <input
+                      ref={inputRef}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search by item, restaurant, cuisine..."
+                      className="w-full rounded-[22px] border border-input bg-white/90 py-3 pl-11 pr-12 text-sm text-foreground placeholder:text-muted-foreground shadow-[0_22px_44px_-28px_rgba(24,36,33,0.45)] focus:outline-none focus:ring-4 focus:ring-ring/20"
+                    />
+
+                    {searchQuery.trim() !== '' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery('');
+                          requestAnimationFrame(() => {
+                            inputRef.current?.focus();
+                          });
+                        }}
+                        className="absolute right-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Clear search"
+                      >
+                        <XIcon className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid gap-3">
+                  {heroStats.map((stat) => (
+                    <div
+                      key={stat.label}
+                      className="rounded-[22px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]"
+                    >
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        {stat.label}
+                      </p>
+                      <p className={`mt-2 text-[2.35rem] font-semibold leading-none ${stat.tone}`}>{stat.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="grid gap-3 md:grid-cols-3">
+              {[
+                {
+                  label: 'Days saved',
+                  value: impactSummary.daysSaved,
+                  suffix: 'days',
+                  note: 'Completed pickup days',
+                  tone: 'text-[var(--brand-ink)]',
+                },
+                {
+                  label: 'CO2 saved',
+                  value: impactSummary.co2KgSaved.toFixed(0),
+                  suffix: 'kg',
+                  note: 'Updated from completed pickups',
+                  tone: 'text-[var(--brand-coral)]',
+                },
+                {
+                  label: 'Water saved',
+                  value: impactSummary.waterLitersSaved.toFixed(0),
+                  suffix: 'L',
+                  note: 'Each rescued meal adds impact',
+                  tone: 'text-[var(--brand-gold)]',
+                },
+              ].map((card) => (
+                <section
+                  key={card.label}
+                  className="spotlight-panel rounded-[24px] p-5"
+                >
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {card.label}
+                  </p>
+                  <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>
+                    {card.value}
+                    <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
+                  </p>
+                  <p className="mt-2 text-sm text-slate-500">{card.note}</p>
+                </section>
+              ))}
+            </section>
+
+            {visibleRecommendedListings.length > 0 && (
+              <section className="flex flex-col gap-2.5 rounded-[28px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Recommended for you</h2>
+                  <p className="text-xs text-muted-foreground sm:text-sm">
+                    {geminiUsed
+                      ? 'Personalized picks ranked from your completed order history.'
+                      : 'Matched from your completed order history.'}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                   {visibleRecommendedListings.map((item, idx) => {
                     const key = getListingId(item) ?? `rec-${idx}`;
                     return (
@@ -586,26 +707,25 @@ export default function UserHome() {
                         key={key}
                         type="button"
                         onClick={() => handleCardClick(item)}
-                        className="w-[280px] shrink-0 rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30 sm:w-[300px]"
+                        className="rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
                       >
                         <div className="group h-full">
                           <ListingCard
                             item={item}
                             aiRecommended={true}
                             aiReason={item?.aiReason ?? null}
-                            isFavorited={isFavorite(item)}
-                            onToggleFavorite={toggleFavorite}
+                            compact={true}
                           />
                         </div>
                       </button>
                     );
                   })}
                 </div>
-              </div>
-            </section>
-          )}
+              </section>
+            )}
+          </div>
 
-          <section className="flex flex-col gap-3">
+          <section className="flex flex-col gap-3 rounded-[30px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm sm:p-5">
             <div>
               <h2 className="text-xl font-semibold text-slate-900">All listings</h2>
               <p className="text-sm text-muted-foreground">Browse all available food listings</p>
@@ -629,8 +749,6 @@ export default function UserHome() {
                           item={item}
                           aiRecommended={Boolean(item?.aiRecommended)}
                           aiReason={item?.aiReason ?? null}
-                          isFavorited={isFavorite(item)}
-                          onToggleFavorite={toggleFavorite}
                         />
                       </div>
                     </button>

@@ -18,6 +18,148 @@ const USERS = db.collection('users')
 const RESTAURANTS = db.collection('restaurants')
 const JWT_SECRET = process.env.JWT_SECRET || 'foodrescue-secret' // Use env variable in production
 
+function createDefaultUserImpact() {
+  return {
+    mealsRescued: 0,
+    co2KgSaved: 0,
+    waterLitersSaved: 0,
+    moneySaved: 0,
+    daysSaved: 0,
+    completedDayKeys: [],
+    lastSuccessfulOrderAt: null,
+    leaderboardEligible: true
+  };
+}
+
+function createDefaultRestaurantImpact() {
+  return {
+    mealsRescued: 0,
+    co2KgSaved: 0,
+    waterLitersSaved: 0,
+    revenueRecovered: 0,
+    ordersFulfilled: 0,
+    repeatCustomers: 0,
+    daysSaved: 0,
+    completedDayKeys: [],
+    lastSuccessfulOrderAt: null,
+    leaderboardEligible: true
+  };
+}
+
+function normalizeImpact(impact, defaultsFactory) {
+  const safeImpact = impact && typeof impact === 'object' ? impact : {};
+  const defaults = defaultsFactory();
+
+  return {
+    ...defaults,
+    ...safeImpact,
+    daysSaved: Number(
+      safeImpact.daysSaved ??
+      safeImpact.currentStreakDays ??
+      defaults.daysSaved ??
+      0
+    ) || 0,
+    completedDayKeys: Array.isArray(safeImpact.completedDayKeys)
+      ? [...new Set(safeImpact.completedDayKeys.map((key) => String(key).trim()).filter(Boolean))]
+      : [],
+    leaderboardEligible:
+      safeImpact.leaderboardEligible === undefined
+        ? defaults.leaderboardEligible
+        : Boolean(safeImpact.leaderboardEligible)
+  };
+}
+
+function buildLegacyImpactFields(safeData, impact) {
+  return {
+    co2: Number(safeData.co2 ?? impact.co2KgSaved ?? 0) || 0,
+    water: Number(safeData.water ?? impact.waterLitersSaved ?? 0) || 0,
+    days: Number(safeData.days ?? impact.daysSaved ?? 0) || 0,
+  };
+}
+
+async function ensureLegacyImpactFields(docRef, safeData, impact) {
+  const updates = {};
+
+  if (safeData.co2 === undefined) updates.co2 = Number(impact.co2KgSaved || 0) || 0;
+  if (safeData.water === undefined) updates.water = Number(impact.waterLitersSaved || 0) || 0;
+  if (safeData.days === undefined) updates.days = Number(impact.daysSaved || 0) || 0;
+
+  if (Object.keys(updates).length === 0) return;
+
+  await docRef.set(updates, { merge: true });
+}
+
+function sanitizeAccountDocument(doc, defaultsFactory) {
+  const data = doc.data() || {};
+  const { password, ...safeData } = data;
+  const impact = normalizeImpact(
+    {
+      ...(safeData.impact && typeof safeData.impact === 'object' ? safeData.impact : {}),
+      co2KgSaved:
+        safeData?.impact?.co2KgSaved ??
+        safeData.co2 ??
+        0,
+      waterLitersSaved:
+        safeData?.impact?.waterLitersSaved ??
+        safeData.water ??
+        0,
+      daysSaved:
+        safeData?.impact?.daysSaved ??
+        safeData.days ??
+        0,
+    },
+    defaultsFactory
+  );
+  const legacyImpactFields = buildLegacyImpactFields(safeData, impact);
+
+  return {
+    id: doc.id,
+    ...safeData,
+    ...legacyImpactFields,
+    city: typeof safeData.city === 'string' ? safeData.city : '',
+    impact
+  };
+}
+
+function sanitizeLeaderboardValue(value) {
+  const numeric = Number(value ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function buildMetricLeaderboard(entries, metric, limit, currentUserId = '') {
+  const sorted = [...entries].sort((a, b) => {
+    const delta =
+      sanitizeLeaderboardValue(b?.impact?.[metric]) -
+      sanitizeLeaderboardValue(a?.impact?.[metric]);
+
+    if (delta !== 0) return delta;
+    return String(a?.username || '').localeCompare(String(b?.username || ''));
+  });
+
+  const top = sorted.slice(0, limit).map((entry, index) => ({
+    rank: index + 1,
+    userId: entry.id,
+    username: entry.username || `User ${index + 1}`,
+    value: sanitizeLeaderboardValue(entry?.impact?.[metric]),
+  }));
+
+  const currentUserIndex = currentUserId
+    ? sorted.findIndex((entry) => entry.id === String(currentUserId))
+    : -1;
+
+  const currentUser =
+    currentUserIndex >= 0
+      ? {
+          rank: currentUserIndex + 1,
+          userId: sorted[currentUserIndex].id,
+          username: sorted[currentUserIndex].username || 'You',
+          value: sanitizeLeaderboardValue(sorted[currentUserIndex]?.impact?.[metric]),
+        }
+      : null;
+
+  return { top, currentUser };
+}
+
 // Register a new user account
 app.post('/account/register', async (req, res) => {
   try {
@@ -40,6 +182,11 @@ app.post('/account/register', async (req, res) => {
       email,
       password: hashedPassword,
       cart: [],
+      city: '',
+      co2: 0,
+      water: 0,
+      days: 0,
+      impact: createDefaultUserImpact(),
       createdAt: new Date()
     };
 
@@ -77,6 +224,11 @@ app.post('/account/restaurant/register', async (req, res) => {
       email,
       password: hashedPassword,
       cart: [],
+      city: '',
+      co2: 0,
+      water: 0,
+      days: 0,
+      impact: createDefaultRestaurantImpact(),
       createdAt: new Date()
     };
 
@@ -165,6 +317,31 @@ app.post('/account/restaurant/login', async (req, res) => {
   }
 });
 
+// USER LEADERBOARDS
+app.get('/account/leaderboards/users', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(25, Number(req.query.limit ?? 10) || 10));
+    const currentUserId = String(req.query.userId || '').trim();
+
+    const snapshot = await USERS.get();
+    const users = snapshot.docs.map((doc) => sanitizeAccountDocument(doc, createDefaultUserImpact));
+
+    const co2KgSaved = buildMetricLeaderboard(users, 'co2KgSaved', limit, currentUserId);
+    const waterLitersSaved = buildMetricLeaderboard(users, 'waterLitersSaved', limit, currentUserId);
+
+    res.json({
+      success: true,
+      limit,
+      leaderboards: {
+        co2KgSaved,
+        waterLitersSaved,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get a user account by ID
 app.get('/account/:id', async (req, res) => {
   try {
@@ -174,10 +351,29 @@ app.get('/account/:id', async (req, res) => {
       return res.status(404).json({ error: 'Not found' });
     }
 
-    const { password, ...safeData } = doc.data(); // Exclude password from response
+    const rawData = doc.data() || {};
+    const safeDoc = sanitizeAccountDocument(doc, createDefaultUserImpact);
+    await ensureLegacyImpactFields(USERS.doc(req.params.id), rawData, safeDoc.impact);
+    res.json(safeDoc);
 
-    res.json({ id: doc.id, ...safeData });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// Get a restaurant account by ID
+app.get('/account/restaurant/:id', async (req, res) => {
+  try {
+    const doc = await RESTAURANTS.doc(req.params.id).get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const rawData = doc.data() || {};
+    const safeDoc = sanitizeAccountDocument(doc, createDefaultRestaurantImpact);
+    await ensureLegacyImpactFields(RESTAURANTS.doc(req.params.id), rawData, safeDoc.impact);
+    res.json(safeDoc);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -214,6 +410,30 @@ function normalizeCartItem(input) {
   };
 }
 
+function isExpiredCartItem(item) {
+  const expiryTime = item?.expiryTime || item?.ExpiryTime || '';
+  if (!expiryTime) return false;
+
+  const expiryDate = new Date(expiryTime);
+  if (Number.isNaN(expiryDate.getTime())) return false;
+
+  return expiryDate.getTime() <= Date.now();
+}
+
+function sanitizeCart(cart) {
+  const safeCart = Array.isArray(cart) ? cart : [];
+  return safeCart.filter((item) => !isExpiredCartItem(item));
+}
+
+async function updateCartIfSanitized(docRef, cart, sanitizedCart) {
+  if (sanitizedCart.length === cart.length) return;
+
+  await docRef.update({
+    cart: sanitizedCart,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+}
+
 // CART: Get cart for a user
 app.get('/account/:id/cart', async (req, res) => {
   try {
@@ -222,7 +442,10 @@ app.get('/account/:id/cart', async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Not found' });
     const data = doc.data() || {};
     const cart = Array.isArray(data.cart) ? data.cart : [];
-    res.json({ cart });
+    const sanitizedCart = sanitizeCart(cart);
+
+    await updateCartIfSanitized(docRef, cart, sanitizedCart);
+    res.json({ cart: sanitizedCart });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -237,6 +460,9 @@ app.post('/account/:id/cart/items', async (req, res) => {
     if (!normalized.listingId) {
       return res.status(400).json({ error: 'listingId is required' });
     }
+    if (isExpiredCartItem(normalized)) {
+      return res.status(400).json({ error: 'This listing has expired' });
+    }
 
     const qty = Number(quantity ?? req.body?.qty ?? 1);
     if (!Number.isFinite(qty) || qty <= 0) {
@@ -248,7 +474,7 @@ app.post('/account/:id/cart/items', async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Not found' });
 
     const data = doc.data() || {};
-    const cart = Array.isArray(data.cart) ? data.cart.slice() : [];
+    const cart = sanitizeCart(Array.isArray(data.cart) ? data.cart.slice() : []);
 
     const idx = cart.findIndex(
       (c) => String(c?.listingId || '') === String(normalized.listingId)
@@ -296,7 +522,7 @@ app.delete('/account/:id/cart/items/:listingId', async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Not found' });
 
     const data = doc.data() || {};
-    const cart = Array.isArray(data.cart) ? data.cart : [];
+    const cart = sanitizeCart(Array.isArray(data.cart) ? data.cart : []);
     const filtered = cart.filter(
       (c) => String(c?.listingId || '') !== String(listingId)
     );
@@ -327,8 +553,12 @@ app.put('/account/:id/cart/items/:listingId', async (req, res) => {
     const doc = await docRef.get();
     if (!doc.exists) return res.status(404).json({ error: 'Not found' });
 
+    if (item && isExpiredCartItem(normalizeCartItem(item))) {
+      return res.status(400).json({ error: 'This listing has expired' });
+    }
+
     const data = doc.data() || {};
-    const cart = Array.isArray(data.cart) ? data.cart.slice() : [];
+    const cart = sanitizeCart(Array.isArray(data.cart) ? data.cart.slice() : []);
     const idx = cart.findIndex(
       (c) => String(c?.listingId || '') === String(listingId)
     );

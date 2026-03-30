@@ -2,7 +2,6 @@ import { PackageIcon, SearchIcon } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/context/AuthContext';
-import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 
 function getField(item, ...keys) {
@@ -126,35 +125,80 @@ function normalizeStatusLabel(value, fallback = 'Active') {
     .join(' ');
 }
 
-function getStatusBadge(row) {
-  const normalized = String(row?.status || '').trim().toLowerCase();
-  const past = isPastOrder(row);
+function normalizeOrderItemStatus(value, fallback = 'new') {
+  const normalized = String(value || fallback).trim().toLowerCase();
+
+  if (['new', 'pending', 'confirmed'].includes(normalized)) {
+    return 'confirmed';
+  }
+
+  if (['ready', 'preparing'].includes(normalized)) {
+    return 'ready';
+  }
 
   if (['completed', 'collected'].includes(normalized)) {
+    return 'completed';
+  }
+
+  if (['cancelled', 'canceled', 'expired', 'refunded', 'failed', 'missed', 'uncollected'].includes(normalized)) {
+    return 'uncollected';
+  }
+
+  return fallback;
+}
+
+function getOrderBucket(row) {
+  const normalized = normalizeOrderItemStatus(row?.status, 'confirmed');
+  const pickupDate = parseCollectionTiming(row?.pickupTime, row?.createdAt);
+  const pickupPassed = pickupDate ? pickupDate.getTime() < Date.now() : false;
+
+  if (normalized === 'completed') {
+    return 'completed';
+  }
+
+  if (normalized === 'ready') {
+    return 'ready';
+  }
+
+  if (normalized === 'uncollected') {
+    return 'uncollected';
+  }
+
+  if (pickupPassed) {
+    return 'uncollected';
+  }
+
+  return 'confirmed';
+}
+
+function getStatusBadge(row) {
+  const bucket = getOrderBucket(row);
+
+  if (bucket === 'completed') {
     return {
       label: 'Completed',
       className: 'bg-emerald-100 text-emerald-700',
     };
   }
 
-  if (normalized === 'preparing') {
+  if (bucket === 'ready') {
     return {
-      label: 'Preparing',
+      label: 'Ready',
       className: 'bg-blue-100 text-blue-700',
     };
   }
 
-  if (['confirmed', 'new', 'active'].includes(normalized)) {
+  if (bucket === 'confirmed') {
     return {
-      label: row.status,
+      label: 'Confirmed',
       className: 'bg-yellow-100 text-yellow-800',
     };
   }
 
-  if (past) {
+  if (bucket === 'uncollected') {
     return {
-      label: 'Past',
-      className: 'bg-slate-100 text-slate-600',
+      label: 'Uncollected',
+      className: 'bg-slate-200 text-slate-700',
     };
   }
 
@@ -174,17 +218,7 @@ function buildRowKey({ orderId, itemId, itemName, pickupTime, index = 0 }) {
 }
 
 function isPastOrder(row) {
-  const status = String(row?.status || '').trim().toLowerCase();
-  if (['completed', 'collected', 'cancelled', 'canceled', 'expired', 'refunded', 'failed'].includes(status)) {
-    return true;
-  }
-
-  const pickupDate = parseCollectionTiming(row?.pickupTime, row?.createdAt);
-  if (pickupDate) {
-    return pickupDate.getTime() < Date.now();
-  }
-
-  return false;
+  return ['completed', 'uncollected'].includes(getOrderBucket(row));
 }
 
 function flattenRemoteOrders(orderList) {
@@ -195,7 +229,7 @@ function flattenRemoteOrders(orderList) {
     const currency = order?.currency || 'sgd';
     const orderId = order?.orderId || order?.id || 'ORD-UNKNOWN';
     const createdAt = order?.createdAt || null;
-    const orderStatus = normalizeStatusLabel(order?.status, 'Confirmed');
+    const orderStatus = normalizeOrderItemStatus(order?.status, 'confirmed');
 
     if (items.length === 0) {
       return [{
@@ -207,7 +241,7 @@ function flattenRemoteOrders(orderList) {
         pickupTime: '',
         paidAmount: Number(order?.totalPrice ?? 0),
         currency,
-        status: orderStatus,
+        status: normalizeStatusLabel(orderStatus, 'Confirmed'),
         createdAt,
         source: 'remote',
       }];
@@ -220,6 +254,10 @@ function flattenRemoteOrders(orderList) {
       const pickupTime = getRemoteItemPickupTime(order, item, itemName);
       const quantity = Number(item?.quantity ?? 0);
       const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
+      const itemStatus = normalizeOrderItemStatus(
+        getField(item, 'fulfillmentStatus', 'FulfillmentStatus', 'status', 'Status'),
+        orderStatus
+      );
       const unitPaid = toMajorUnits(
         getField(item, 'unitAmount', 'unitAmountMinor', 'price', 'Price')
       );
@@ -241,7 +279,7 @@ function flattenRemoteOrders(orderList) {
         pickupTime,
         paidAmount: Number((unitPaid * safeQuantity).toFixed(2)),
         currency,
-        status: orderStatus,
+        status: normalizeStatusLabel(itemStatus, 'Confirmed'),
         createdAt,
         source: 'remote',
       };
@@ -249,51 +287,14 @@ function flattenRemoteOrders(orderList) {
   });
 }
 
-function flattenLocalOrders(orderList) {
-  const safeOrders = Array.isArray(orderList) ? orderList : [];
-
-  return safeOrders.map((order, index) => {
-    const item = order?.item || {};
-    const itemName =
-      getField(item, 'itemName', 'ItemName', 'name', 'Name') || 'Item';
-    const itemId = getField(item, 'listingId', 'ListingId', 'id', 'Id');
-    const quantity = Number(order?.quantity ?? 0);
-    const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
-    const unitPaid = toMajorUnits(getField(item, 'price', 'Price', 'unitAmount'));
-
-    return {
-      rowKey:
-        order?.lineKey ||
-        buildRowKey({
-          orderId: order?.orderId,
-          itemId: itemId != null ? String(itemId) : '',
-          itemName,
-          pickupTime: order?.pickupTime || '',
-          index,
-        }),
-      orderId: order?.orderId || 'ORD-PENDING',
-      itemName: String(itemName),
-      restaurantName: String(
-        getField(item, 'restaurantName', 'RestaurantName') || ''
-      ),
-      quantity: safeQuantity,
-      pickupTime: order?.pickupTime || '',
-      paidAmount: Number((unitPaid * safeQuantity).toFixed(2)),
-      currency: 'sgd',
-      status: normalizeStatusLabel(order?.status, 'Active'),
-      createdAt: order?.createdAt || null,
-      source: 'local',
-    };
-  });
-}
-
 export default function UserOrders() {
-  const { user, orders: localOrders, clearOrders } = useAuth();
-  const [statusTab, setStatusTab] = useState('active');
+  const { user } = useAuth();
+  const [statusTab, setStatusTab] = useState('confirmed');
   const [searchQuery, setSearchQuery] = useState('');
   const [remoteOrders, setRemoteOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState(1);
 
   const orderServiceUrl =
     import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
@@ -344,22 +345,12 @@ export default function UserOrders() {
   }, [orderServiceUrl, user?.id]);
 
   const mergedRows = useMemo(() => {
-    const merged = new Map();
-
-    for (const row of flattenLocalOrders(localOrders)) {
-      merged.set(row.rowKey, row);
-    }
-
-    for (const row of flattenRemoteOrders(remoteOrders)) {
-      merged.set(row.rowKey, row);
-    }
-
-    return Array.from(merged.values()).sort((a, b) => {
+    return flattenRemoteOrders(remoteOrders).sort((a, b) => {
       const aTime = getDateMs(a?.createdAt);
       const bTime = getDateMs(b?.createdAt);
       return bTime - aTime;
     });
-  }, [localOrders, remoteOrders]);
+  }, [remoteOrders]);
 
   const filteredBySearch = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -382,37 +373,83 @@ export default function UserOrders() {
   }, [mergedRows, searchQuery]);
 
   const counts = useMemo(() => {
-    let active = 0;
-    let past = 0;
+    let confirmed = 0;
+    let ready = 0;
+    let completed = 0;
+    let uncollected = 0;
 
     for (const row of mergedRows) {
-      if (isPastOrder(row)) past += 1;
-      else active += 1;
+      const bucket = getOrderBucket(row);
+      if (bucket === 'confirmed') confirmed += 1;
+      else if (bucket === 'ready') ready += 1;
+      else if (bucket === 'completed') completed += 1;
+      else if (bucket === 'uncollected') uncollected += 1;
     }
 
-    return { active, past };
+    return { confirmed, ready, completed, uncollected };
   }, [mergedRows]);
 
   const visibleRows = useMemo(() => {
     return filteredBySearch.filter((row) => {
-      const past = isPastOrder(row);
-      return statusTab === 'past' ? past : !past;
+      return getOrderBucket(row) === statusTab;
     });
   }, [filteredBySearch, statusTab]);
 
+  const PAGE_SIZE = 8;
+
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
+
+  useEffect(() => {
+    setPage(1);
+  }, [statusTab, searchQuery]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
+
+  const pagedRows = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return visibleRows.slice(start, start + PAGE_SIZE);
+  }, [page, visibleRows]);
+
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900">My Orders</h1>
-        <p className="mt-2 text-slate-600">
-          Track upcoming collections and review your past order history.
-        </p>
+      <div className="spotlight-panel overflow-hidden rounded-[32px] p-6 sm:p-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
+          <div>
+            <span className="hero-kicker">Pickup Timeline</span>
+            <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
+              Your rescue orders, without the clutter.
+            </h1>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+              Upcoming collections stay front and center, while past rescues are neatly tucked
+              away for quick review.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+            <div className="rounded-[24px] border border-white/70 bg-white/70 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Confirmed
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900">{counts.confirmed}</p>
+            </div>
+            <div className="rounded-[24px] border border-white/70 bg-white/70 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Ready
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-slate-900">{counts.ready}</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
         {[
-          { key: 'active', label: 'Active', count: counts.active },
-          { key: 'past', label: 'Past', count: counts.past },
+          { key: 'confirmed', label: 'Confirmed', count: counts.confirmed },
+          { key: 'ready', label: 'Ready', count: counts.ready },
+          { key: 'completed', label: 'Completed', count: counts.completed },
+          { key: 'uncollected', label: 'Uncollected', count: counts.uncollected },
         ].map((tab) => (
           <button
             key={tab.key}
@@ -438,7 +475,7 @@ export default function UserOrders() {
         ))}
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="spotlight-panel flex flex-col gap-3 rounded-[28px] p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative w-full max-w-xl">
           <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -448,12 +485,9 @@ export default function UserOrders() {
             className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
           />
         </div>
-
-        {localOrders.length > 0 && (
-          <Button type="button" variant="outline" onClick={clearOrders}>
-            Clear local placeholders
-          </Button>
-        )}
+        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+          Auto-synced from your confirmed orders
+        </p>
       </div>
 
       {error && (
@@ -485,10 +519,10 @@ export default function UserOrders() {
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-[28px] border border-white/70 bg-white/80 shadow-[0_24px_50px_-32px_rgba(24,36,33,0.45)] backdrop-blur-sm">
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200">
-              <thead className="bg-slate-50">
+              <thead className="bg-white/70">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Item</th>
                   <th className="px-4 py-3">Paid</th>
@@ -499,7 +533,7 @@ export default function UserOrders() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {visibleRows.map((row) => (
+                {pagedRows.map((row) => (
                   <tr key={row.rowKey} className="align-top text-sm text-slate-700">
                     <td className="px-4 py-4">
                       <div className="font-medium text-slate-900">{row.itemName}</div>
@@ -532,6 +566,31 @@ export default function UserOrders() {
               </tbody>
             </table>
           </div>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-sm text-slate-600">
+              <span>
+                Page {page} of {pageCount}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={page === 1}
+                  className="rounded-full border border-slate-200 px-3 py-1.5 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+                  disabled={page === pageCount}
+                  className="rounded-full border border-slate-200 px-3 py-1.5 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

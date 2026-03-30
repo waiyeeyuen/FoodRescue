@@ -1,18 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
+
 import { useAuth } from '@/context/AuthContext';
 
 function RestaurantLayout() {
   const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef(null);
   const location = useLocation();
 
   const navItems = [
     { label: 'Listings', path: '/restaurant/listings' },
     { label: 'Orders', path: '/restaurant/orders' },
-    { label: 'Payouts', path: '/restaurant/payouts' },
-    { label: 'Profile', path: '/restaurant/profile' },
+    { label: 'Statistics', path: '/restaurant/profile' },
   ];
 
   const isActive = (path) => location.pathname === path;
@@ -22,34 +23,44 @@ function RestaurantLayout() {
     window.location.href = '/login';
   };
 
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm ring-1 ring-slate-200 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            {/* Logo */}
-            <Link to="/restaurant/listings" className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-lg overflow-hidden ring-1 ring-slate-200 bg-white">
+    <div className="site-shell">
+      <header className="site-header sticky top-0 z-40">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="flex min-h-[5.25rem] items-center justify-between gap-4">
+            <Link to="/restaurant/listings" className="flex items-center gap-3">
+              <div className="site-brand-mark flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/80">
                 <img
                   src="/logo.png"
                   alt="FoodRescue logo"
                   className="h-full w-full object-contain"
                 />
               </div>
-              <span className="text-lg font-bold text-slate-900">FoodRescue</span>
+              <div className="min-w-0">
+                <p className="site-brand-wordmark text-xl font-semibold text-slate-900 sm:text-2xl">
+                  FoodRescue
+                </p>
+              </div>
             </Link>
 
-            {/* Desktop Navigation */}
-            <nav className="hidden md:flex items-center gap-1">
+            <nav className="hidden items-center gap-2 rounded-full border border-white/70 bg-white/55 p-1.5 shadow-[0_18px_34px_-28px_rgba(24,36,33,0.45)] backdrop-blur-sm md:flex">
               {navItems.map((item) => (
                 <Link
                   key={item.path}
                   to={item.path}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition ${
-                    isActive(item.path)
-                      ? 'bg-slate-900 text-white'
-                      : 'text-slate-600 hover:bg-slate-100'
+                  className={`site-nav-link rounded-full px-4 py-2.5 text-sm font-medium transition ${
+                    isActive(item.path) ? 'site-nav-link-active' : ''
                   }`}
                 >
                   {item.label}
@@ -57,53 +68,43 @@ function RestaurantLayout() {
               ))}
             </nav>
 
-            {/* Profile Section */}
             <div className="flex items-center gap-4">
-              {/* Profile Picture Dropdown */}
-              <div className="relative">
+              <div className="relative" ref={profileMenuRef}>
                 <button
-                  onClick={() => setProfileMenuOpen(!profileMenuOpen)}
-                  className="h-9 w-9 rounded-full bg-amber-200 hover:bg-amber-300 transition flex items-center justify-center overflow-hidden ring-2 ring-amber-200"
+                  type="button"
+                  onClick={() => setProfileMenuOpen((prev) => !prev)}
+                  className="site-icon-button flex h-10 w-10 items-center justify-center overflow-hidden rounded-full transition"
                   title={user?.restaurantName}
                 >
-                  <span className="text-sm font-semibold text-amber-900">
+                  <span className="text-sm font-semibold text-slate-700">
                     {(user?.restaurantName || 'R')[0].toUpperCase()}
                   </span>
                 </button>
 
-                {/* Profile Dropdown Menu */}
                 {profileMenuOpen && (
-                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg ring-1 ring-slate-200 py-1 z-50">
-                    <div className="px-4 py-3 border-b border-slate-200">
-                      <p className="text-sm font-medium text-slate-900">
-                        {user?.restaurantName}
-                      </p>
+                  <div className="site-popover absolute right-0 z-50 mt-3 w-60 overflow-hidden rounded-[24px] py-2">
+                    <div className="border-b border-border/80 px-4 py-3">
+                      <p className="text-sm font-medium text-slate-900">{user?.restaurantName}</p>
                       <p className="text-xs text-slate-500">{user?.email}</p>
                     </div>
                     <Link
-                      to="/restaurant/profile"
-                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                      to="/restaurant/settings"
+                      className="site-dropdown-link mx-2 my-1 block px-4 py-2 text-sm"
                       onClick={() => setProfileMenuOpen(false)}
                     >
-                      Store Profile
+                      Profile
                     </Link>
                     <Link
                       to="/restaurant/settings"
-                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                      className="site-dropdown-link mx-2 my-1 block px-4 py-2 text-sm"
                       onClick={() => setProfileMenuOpen(false)}
                     >
-                      Settings
+                      Profile
                     </Link>
-                    <a
-                      href="#notifications"
-                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                      onClick={() => setProfileMenuOpen(false)}
-                    >
-                      Notifications
-                    </a>
                     <button
+                      type="button"
                       onClick={handleLogout}
-                      className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                      className="mx-2 my-1 w-[calc(100%-1rem)] rounded-2xl px-4 py-2 text-left text-sm text-red-600 transition hover:bg-red-50"
                     >
                       Logout
                     </button>
@@ -111,10 +112,11 @@ function RestaurantLayout() {
                 )}
               </div>
 
-              {/* Mobile Menu Button */}
               <button
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                className="md:hidden p-2 rounded-lg hover:bg-slate-100"
+                type="button"
+                onClick={() => setMobileMenuOpen((prev) => !prev)}
+                className="site-icon-button flex h-10 w-10 items-center justify-center rounded-full transition md:hidden"
+                aria-label="Open menu"
               >
                 <svg className="h-6 w-6 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -123,30 +125,28 @@ function RestaurantLayout() {
             </div>
           </div>
 
-          {/* Mobile Navigation */}
           {mobileMenuOpen && (
-            <nav className="md:hidden border-t border-slate-200 py-3 space-y-1">
-              {navItems.map((item) => (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`block px-4 py-2 rounded-lg text-sm font-medium transition ${
-                    isActive(item.path)
-                      ? 'bg-slate-900 text-white'
-                      : 'text-slate-600 hover:bg-slate-100'
-                  }`}
-                  onClick={() => setMobileMenuOpen(false)}
-                >
-                  {item.label}
-                </Link>
-              ))}
+            <nav className="md:hidden border-t border-border/80 py-4">
+              <div className="flex flex-col gap-2 rounded-[24px] bg-white/55 p-2 backdrop-blur-sm">
+                {navItems.map((item) => (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    className={`site-nav-link block rounded-2xl px-4 py-3 text-sm font-medium transition ${
+                      isActive(item.path) ? 'site-nav-link-active' : ''
+                    }`}
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    {item.label}
+                  </Link>
+                ))}
+              </div>
             </nav>
           )}
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="site-main mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <Outlet />
       </main>
     </div>

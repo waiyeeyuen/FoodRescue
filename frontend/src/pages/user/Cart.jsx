@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRightIcon,
@@ -61,6 +61,13 @@ function formatPickupTiming(value) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function isExpiredDateTime(value) {
+  if (!value) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getTime() <= Date.now();
 }
 
 function formatLocalDateTimeInput(date) {
@@ -141,12 +148,14 @@ export default function UserCart() {
   const [busyId, setBusyId] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState(null);
+  const [cartNotice, setCartNotice] = useState(null);
   const [rewardStatus, setRewardStatus] = useState(null);
   const [rewardLoading, setRewardLoading] = useState(false);
   const [liveStockMap, setLiveStockMap] = useState({});
   const [editingKey, setEditingKey] = useState('');
   const [editQuantity, setEditQuantity] = useState('1');
   const [editPickupTime, setEditPickupTime] = useState('');
+  const expiredCleanupRef = useRef(new Set());
 
   const normalizedCart = useMemo(() => {
     return (cart || []).map((entry, index) => {
@@ -178,6 +187,10 @@ export default function UserCart() {
 
       const quantityRaw = getField(entry, 'quantity', 'Quantity') ?? 0;
       const pickupTime = getField(entry, 'pickupTime', 'PickupTime') ?? '';
+      const expiryTime =
+        getField(entry, 'expiryTime', 'ExpiryTime') ??
+        getField(item, 'expiryTime', 'ExpiryTime') ??
+        '';
 
       const price = Number(priceRaw ?? 0);
       const quantity = Number(quantityRaw ?? 0);
@@ -206,6 +219,8 @@ export default function UserCart() {
         price: Number.isFinite(price) ? price : 0,
         quantity: Number.isFinite(quantity) ? quantity : 0,
         pickupTime,
+        expiryTime,
+        isExpired: isExpiredDateTime(expiryTime),
         lineTotal,
         availableForThisLine,
         exceedsStock,
@@ -214,6 +229,15 @@ export default function UserCart() {
   }, [cart, getRemainingStockForListing, liveStockMap]);
 
   const hasInvalidStock = normalizedCart.some((line) => line.exceedsStock);
+  const expiredListingIds = useMemo(
+    () => Array.from(new Set(
+      normalizedCart
+        .filter((line) => line.isExpired && line.listingId != null)
+        .map((line) => String(line.listingId))
+    )),
+    [normalizedCart]
+  );
+  const hasExpiredListings = expiredListingIds.length > 0;
 
   const total = useMemo(() => {
     return normalizedCart.reduce((sum, item) => sum + item.lineTotal, 0);
@@ -228,6 +252,49 @@ export default function UserCart() {
     if (rewardDiscount <= 0) return 0;
     return Number((total - discountedTotal).toFixed(2));
   }, [discountedTotal, rewardDiscount, total]);
+
+  useEffect(() => {
+    if (cartLoading || expiredListingIds.length === 0) return;
+
+    const idsToRemove = expiredListingIds.filter((id) => !expiredCleanupRef.current.has(id));
+    if (idsToRemove.length === 0) return;
+
+    let cancelled = false;
+    idsToRemove.forEach((id) => expiredCleanupRef.current.add(id));
+
+    async function removeExpiredListings() {
+      try {
+        await Promise.all(
+          idsToRemove.map(async (id) => {
+            try {
+              await removeFromCart(id);
+            } catch (error) {
+              expiredCleanupRef.current.delete(id);
+              throw error;
+            }
+          })
+        );
+
+        if (!cancelled) {
+          setCartNotice(
+            idsToRemove.length === 1
+              ? 'An expired listing was removed from your cart.'
+              : `${idsToRemove.length} expired listings were removed from your cart.`
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCheckoutError(error?.message || 'Failed to remove expired listings from cart');
+        }
+      }
+    }
+
+    removeExpiredListings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cartLoading, expiredListingIds, removeFromCart]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -401,6 +468,11 @@ export default function UserCart() {
       return;
     }
 
+    if (hasExpiredListings) {
+      setCheckoutError('Expired listings are being removed from your cart. Please try checkout again in a moment.');
+      return;
+    }
+
     if (hasInvalidStock) {
       setCheckoutError('Some items in your cart exceed available stock. Please remove them before checkout.');
       return;
@@ -512,9 +584,16 @@ export default function UserCart() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+      <div className="spotlight-panel flex flex-col gap-4 rounded-[32px] p-6 sm:flex-row sm:items-end sm:justify-between sm:p-8">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">Cart</h1>
+          <span className="hero-kicker">Checkout Queue</span>
+          <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
+            Keep your rescue picks tidy before you pay.
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+            Expired listings clear out automatically, reward progress stays visible, and each line
+            keeps its own pickup timing.
+          </p>
         </div>
         <Link to="/" className="self-start">
           <Button type="button" variant="outline">
@@ -526,6 +605,12 @@ export default function UserCart() {
       {checkoutError && (
         <div className="text-sm text-red-600 bg-red-50 ring-1 ring-red-200 rounded-xl p-3">
           {checkoutError}
+        </div>
+      )}
+
+      {cartNotice && (
+        <div className="text-sm text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded-xl p-3">
+          {cartNotice}
         </div>
       )}
 
@@ -589,6 +674,11 @@ export default function UserCart() {
                               <Clock3Icon className="size-3.5" />
                               {formatPickupTiming(c.pickupTime)}
                             </span>
+                            {c.expiryTime && (
+                              <span className="inline-flex items-center gap-1 text-amber-700">
+                                Expires {formatPickupTiming(c.expiryTime)}
+                              </span>
+                            )}
                           </div>
                         </div>
 

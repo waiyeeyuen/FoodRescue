@@ -1,8 +1,13 @@
 import express from 'express'
 import cors from 'cors'
-import { db } from './firebaseAdmin.js'
+import admin, { db } from './firebaseAdmin.js'
 
 const app = express()
+const USERS = db.collection('users')
+const RESTAURANTS = db.collection('restaurants')
+const IMPACT_CO2_PER_MEAL = 1.1
+const IMPACT_WATER_PER_MEAL = 81
+const IMPACT_TIMEZONE = 'Asia/Singapore'
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
@@ -41,6 +46,18 @@ function toDateMs(value) {
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 }
 
+function toPositiveNumber(value, fallback = 0) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+}
+
+function toMajorUnits(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  if (Number.isInteger(numeric) && numeric > 100) return numeric / 100
+  return numeric
+}
+
 function getItemField(item, ...keys) {
   for (const key of keys) {
     if (item && item[key] !== undefined && item[key] !== null) return item[key];
@@ -50,7 +67,8 @@ function getItemField(item, ...keys) {
 
 function normalizeItemStatus(value, fallback = 'new') {
   const normalized = String(value || fallback).trim().toLowerCase();
-  if (['new', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded'].includes(normalized)) {
+  if (['new', 'ready', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded'].includes(normalized)) {
+    if (normalized === 'preparing') return 'ready'
     return normalized === 'canceled' ? 'cancelled' : normalized;
   }
   return fallback;
@@ -117,6 +135,111 @@ function isOrderCompleted(items) {
   const safeItems = Array.isArray(items) ? items : [];
   if (safeItems.length === 0) return false;
   return safeItems.every((item) => normalizeItemStatus(item?.fulfillmentStatus, 'new') === 'completed');
+}
+
+function getSingaporeDayKey(value) {
+  const parsed = value ? new Date(value) : new Date()
+  if (Number.isNaN(parsed.getTime())) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: IMPACT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date())
+  }
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: IMPACT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(parsed)
+}
+
+function getEstimatedMoneySaved(item) {
+  const quantity = toPositiveNumber(item?.quantity, 1)
+  const originalPrice = toMajorUnits(getItemField(item, 'originalPrice', 'OriginalPrice'))
+  const unitAmount = toMajorUnits(getItemField(item, 'unitAmount', 'price', 'Price'))
+
+  if (!Number.isFinite(originalPrice) || !Number.isFinite(unitAmount) || originalPrice <= unitAmount) {
+    return 0
+  }
+
+  return Number(((originalPrice - unitAmount) * quantity).toFixed(2))
+}
+
+async function applyCompletedPickupImpact({ order, item, completedAt }) {
+  const customerId = String(order?.customerId || '')
+  const restaurantId = String(getItemField(item, 'restaurantId', 'RestaurantId') || '')
+  const quantity = Math.max(1, Math.floor(toPositiveNumber(item?.quantity, 1)))
+  const completedDayKey = getSingaporeDayKey(completedAt?.toISOString?.() || completedAt)
+  const moneySaved = getEstimatedMoneySaved(item)
+  const paidAmount =
+    toMajorUnits(getItemField(item, 'unitAmount', 'price', 'Price') ?? 0) * quantity
+
+  const completedAtValue = completedAt || new Date()
+  async function updateImpactDocument(docRef, getExtraImpact = () => ({})) {
+    await db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef)
+      const data = snapshot.exists ? (snapshot.data() || {}) : {}
+      const existingImpact = data.impact && typeof data.impact === 'object' ? data.impact : {}
+      const existingDayKeys = Array.isArray(existingImpact.completedDayKeys)
+        ? existingImpact.completedDayKeys.map((key) => String(key))
+        : []
+      const nextDayKeys = existingDayKeys.includes(completedDayKey)
+        ? existingDayKeys
+        : [...existingDayKeys, completedDayKey]
+      const extraImpact = getExtraImpact(existingImpact)
+
+      transaction.set(
+        docRef,
+        {
+          co2:
+            toPositiveNumber(existingImpact.co2KgSaved ?? data.co2) +
+            (quantity * IMPACT_CO2_PER_MEAL),
+          water:
+            toPositiveNumber(existingImpact.waterLitersSaved ?? data.water) +
+            (quantity * IMPACT_WATER_PER_MEAL),
+          days: nextDayKeys.length,
+          impact: {
+            ...existingImpact,
+            mealsRescued: toPositiveNumber(existingImpact.mealsRescued) + quantity,
+            co2KgSaved: toPositiveNumber(existingImpact.co2KgSaved ?? data.co2) + (quantity * IMPACT_CO2_PER_MEAL),
+            waterLitersSaved: toPositiveNumber(existingImpact.waterLitersSaved ?? data.water) + (quantity * IMPACT_WATER_PER_MEAL),
+            daysSaved: nextDayKeys.length,
+            completedDayKeys: nextDayKeys,
+            lastSuccessfulOrderAt: completedAtValue,
+            leaderboardEligible: true,
+            ...extraImpact,
+          },
+          updatedAt: completedAtValue,
+        },
+        { merge: true }
+      )
+    })
+  }
+
+  const writes = []
+
+  if (customerId) {
+    writes.push(
+      updateImpactDocument(USERS.doc(customerId), (existingImpact) => ({
+        moneySaved: toPositiveNumber(existingImpact.moneySaved) + moneySaved,
+      }))
+    )
+  }
+
+  if (restaurantId) {
+    writes.push(
+      updateImpactDocument(RESTAURANTS.doc(restaurantId), (existingImpact) => ({
+        revenueRecovered:
+          toPositiveNumber(existingImpact.revenueRecovered) +
+          (Number.isFinite(paidAmount) ? paidAmount : 0),
+        ordersFulfilled: toPositiveNumber(existingImpact.ordersFulfilled) + quantity,
+      }))
+    )
+  }
+
+  await Promise.all(writes)
 }
 
 // CREATE ORDER
@@ -266,7 +389,7 @@ app.get('/orders/restaurant/:restaurantId', async (req, res) => {
       acc.all += 1;
       acc[rowStatus] = (acc[rowStatus] || 0) + 1;
       return acc;
-    }, { all: 0, new: 0, preparing: 0, completed: 0 });
+    }, { all: 0, new: 0, ready: 0, completed: 0 });
 
     res.json({
       success: true,
@@ -336,6 +459,8 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
     const data = doc.data() || {};
     const items = Array.isArray(data.items) ? data.items : [];
     let updated = false;
+    let previousMatchedItem = null;
+    let nextMatchedItem = null;
 
     const nextItems = items.map((item) => {
       const currentItemId = String(getItemField(item, 'itemId', 'listingId', 'id', 'Id') || '');
@@ -347,10 +472,12 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
       }
 
       updated = true;
-      return {
+      previousMatchedItem = item;
+      nextMatchedItem = {
         ...item,
         fulfillmentStatus: nextStatus
       };
+      return nextMatchedItem;
     });
 
     if (!updated) {
@@ -372,6 +499,19 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
         details: `Item ${itemId} status changed to ${nextStatus}`
       }]
     });
+
+    const previousStatus = normalizeItemStatus(
+      getItemField(previousMatchedItem, 'fulfillmentStatus', 'FulfillmentStatus'),
+      'new'
+    );
+
+    if (nextStatus === 'completed' && previousStatus !== 'completed' && nextMatchedItem) {
+      await applyCompletedPickupImpact({
+        order: { ...data, customerId: data.customerId },
+        item: nextMatchedItem,
+        completedAt: now
+      });
+    }
 
     res.json({
       success: true,

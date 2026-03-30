@@ -41,69 +41,12 @@ async function readErrorMessage(response, fallbackMessage) {
   }
 }
 
-function getField(obj, ...keys) {
-  for (const key of keys) {
-    if (obj && obj[key] !== undefined && obj[key] !== null) return obj[key];
-  }
-  return undefined;
-}
-
-function toMajorUnits(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return 0;
-  // Heuristic: treat large integers as minor units (cents).
-  if (Number.isInteger(num) && num > 100) return num / 100;
-  return num;
-}
-
-function normalizeOrderItems(rawItems) {
-  const items = Array.isArray(rawItems) ? rawItems : [];
-
-  const normalized = items
-    .map((entry) => {
-      const wrappedItem =
-        entry?.item && typeof entry.item === 'object' ? entry.item : entry;
-
-      const quantity = Number(getField(entry, 'quantity', 'Quantity') ?? 0);
-      const safeQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
-
-      const id =
-        getField(entry, 'listingId', 'ListingId', 'id', 'Id') ??
-        getField(wrappedItem, 'listingId', 'ListingId', 'id', 'Id');
-
-      const name =
-        getField(entry, 'itemName', 'ItemName') ||
-        getField(wrappedItem, 'itemName', 'ItemName', 'name', 'Name') ||
-        'Item';
-
-      const priceRaw =
-        getField(entry, 'price', 'Price') ?? getField(wrappedItem, 'price', 'Price') ?? 0;
-
-      return {
-        id: id != null ? String(id) : undefined,
-        name: String(name || 'Item'),
-        quantity: safeQuantity,
-        unitPrice: toMajorUnits(priceRaw),
-        raw: entry
-      };
-    })
-    .filter((i) => i.quantity > 0);
-
-  const totalPrice = Number(
-    normalized
-      .reduce((sum, item) => sum + (Number(item.unitPrice) || 0) * item.quantity, 0)
-      .toFixed(2)
-  );
-
-  return { normalized, totalPrice };
-}
-
 export default function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const processedRef = useRef(false);
 
-  const { user, addOrdersFromCart, clearCart } = useAuth();
+  const { user, clearCart } = useAuth();
 
   const [status, setStatus] = useState('processing');
   const [message, setMessage] = useState('Finalising your order...');
@@ -129,16 +72,9 @@ export default function PaymentSuccessPage() {
 
         if (!pending) {
           setStatus('success');
-          setMessage('Payment received. No pending checkout data was found.');
+          setMessage('Payment received. We are waiting for the final inventory result.');
           return;
         }
-
-        const items = Array.isArray(pending?.items) ? pending.items : [];
-        const pickupTime =
-          pending?.pickupTime ||
-          (items.length === 1 ? (items[0]?.pickupTime || '') : '');
-        const orderId =
-          pending?.orderId || pending?.sessionId || sessionId || `ORD-${Date.now()}`;
 
         // Trigger backend pipeline (payment → stock check → place-order → OutSystems decrement)
         // even when Stripe webhooks aren’t running locally.
@@ -155,10 +91,6 @@ export default function PaymentSuccessPage() {
           }
         }
 
-        if (items.length > 0) {
-          await addOrdersFromCart({ items, pickupTime, orderId });
-        }
-
         await clearCart().catch((err) => {
           console.warn('Failed to clear cart after payment:', err);
         });
@@ -170,25 +102,25 @@ export default function PaymentSuccessPage() {
         sessionStorage.removeItem('pending_checkout');
 
         setStatus('success');
-        setMessage('Your payment was successful and your order has been recorded.');
+        setMessage('Payment received. We are checking stock now. If anything fails, your update will appear in the notification bell.');
       } catch (err) {
         console.error('Failed to finalize payment success flow:', err);
         setStatus('error');
-        setMessage(err?.message || 'Payment succeeded, but the order could not be finalised.');
+        setMessage(err?.message || 'Payment succeeded, but we could not confirm the inventory result yet.');
       }
     }
 
     finalizePayment();
-  }, [sessionId, user?.id, addOrdersFromCart, clearCart, paymentServiceUrl]);
+  }, [sessionId, user?.id, clearCart, paymentServiceUrl]);
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-4">
-      <Card className="w-full max-w-lg rounded-2xl shadow-sm">
+      <Card className="w-full max-w-xl rounded-[32px] shadow-[0_24px_50px_-32px_rgba(24,36,33,0.45)]">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+          <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 shadow-[0_20px_40px_-24px_rgba(22,163,74,0.65)]">
             <CheckCircle2Icon className="h-8 w-8 text-green-600" />
           </div>
-          <CardTitle className="text-2xl">
+          <CardTitle className="site-brand-wordmark text-3xl">
             {status === 'error' ? 'Payment Received' : 'Payment Successful'}
           </CardTitle>
           <CardDescription>{message}</CardDescription>
@@ -196,8 +128,8 @@ export default function PaymentSuccessPage() {
 
         <CardContent className="text-center text-sm text-slate-600">
           {status === 'processing' && <p>We are updating your order now.</p>}
-          {status === 'success' && <p>Your order is ready in the Orders tab.</p>}
-          {status === 'error' && <p>Please check your Orders tab or try refreshing once.</p>}
+          {status === 'success' && <p>Check Orders for confirmed items or the bell icon for new notifications.</p>}
+          {status === 'error' && <p>Please refresh once, then check Orders or the bell icon for updates.</p>}
         </CardContent>
 
         <CardFooter className="flex justify-center gap-3">

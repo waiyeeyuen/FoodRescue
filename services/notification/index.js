@@ -15,6 +15,49 @@ dotenv.config({ path: path.resolve(__dirname, './.env') });
 const app = express();
 app.use(express.json());
 
+function toDateValue(value) {
+  if (!value) return null;
+  if (typeof value?.toDate === 'function') return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toTimestamp(value) {
+  return toDateValue(value)?.getTime() || 0;
+}
+
+function serializeNotification(doc) {
+  const data = doc.data();
+  return {
+    id: doc.id,
+    ...data,
+    createdAt: toDateValue(data.createdAt || data.created_at)?.toISOString() || null,
+  };
+}
+
+async function getNotificationsForUser(userId) {
+  const [camelSnapshot, snakeSnapshot] = await Promise.all([
+    db.collection('notifications')
+      .where('userId', '==', userId)
+      .limit(100)
+      .get(),
+    db.collection('notifications')
+      .where('user_id', '==', userId)
+      .limit(100)
+      .get(),
+  ]);
+
+  const merged = new Map();
+
+  [...camelSnapshot.docs, ...snakeSnapshot.docs].forEach((doc) => {
+    merged.set(doc.id, serializeNotification(doc));
+  });
+
+  return Array.from(merged.values())
+    .sort((a, b) => toTimestamp(b.createdAt || b.created_at) - toTimestamp(a.createdAt || a.created_at))
+    .slice(0, 50);
+}
+
 // Start RabbitMQ consumer
 async function startConsumer() {
   const channel = await connectRabbitMQ();
@@ -36,13 +79,38 @@ async function startConsumer() {
 
 // REST API for frontend (behind Kong)
 app.get('/notifications/:user_id', async (req, res) => {
-  const snapshot = await db.collection('notifications')
-    .where('user_id', '==', req.params.user_id)
-    .orderBy('created_at', 'desc')
-    .limit(50)
-    .get();
-    
-  res.json(snapshot.docs.map(doc => doc.data()));
+  try {
+    res.json(await getNotificationsForUser(req.params.user_id));
+  } catch (err) {
+    console.error('[notifications/list] ❌ Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.patch('/notifications/:user_id/read-all', async (req, res) => {
+  try {
+    const notifications = await getNotificationsForUser(req.params.user_id);
+    const unreadNotifications = notifications.filter((notification) => notification.read !== true);
+
+    if (unreadNotifications.length === 0) {
+      return res.json({ success: true, updated: 0 });
+    }
+
+    const batch = db.batch();
+    unreadNotifications.forEach((notification) => {
+      batch.update(db.collection('notifications').doc(notification.id), {
+        read: true,
+        readAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    await batch.commit();
+
+    res.json({ success: true, updated: unreadNotifications.length });
+  } catch (err) {
+    console.error('[notifications/read-all] ❌ Error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Step 11 — called by Place Order (fire-and-forget)
