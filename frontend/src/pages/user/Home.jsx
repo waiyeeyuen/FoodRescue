@@ -483,15 +483,7 @@ export default function UserHome() {
     });
   }, [stockAdjustedRecommendedListings, searchQuery]);
 
-  const recommendedIdSet = useMemo(
-    () => new Set(visibleRecommendedListings.map((item) => getListingId(item)).filter(Boolean)),
-    [visibleRecommendedListings]
-  );
-
-  const regularListings = useMemo(
-    () => visibleListings.filter((item) => !recommendedIdSet.has(getListingId(item))),
-    [visibleListings, recommendedIdSet]
-  );
+  const regularListings = visibleListings;
 
   const heroStats = useMemo(() => {
     const restaurantCount = new Set(
