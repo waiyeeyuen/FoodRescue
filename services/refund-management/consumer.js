@@ -6,6 +6,10 @@ const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost
 
 const QUEUE = 'order.error';
 const DLQ = 'order.error.dlq';
+const DLX = 'order.error.dlx';
+const FAILURE_QUEUE = 'refund.failed';
+
+const MAX_RETRIES = 3;
 
 function maskUrl(url) {
   try {
@@ -13,7 +17,7 @@ function maskUrl(url) {
     if (parsed.username || parsed.password) parsed.password = parsed.password ? '***' : '';
     return parsed.toString();
   } catch {
-    return String(url).replace(/\/\/([^:/@]+):([^@]+)@/g, '//\$1:***@');
+    return String(url).replace(/\/\/([^:/@]+):([^@]+)@/g, '//$1:***@');
   }
 }
 
@@ -49,7 +53,6 @@ function buildRefundRequest(payload) {
     };
   }
 
-  // partial or other conflict-like status => refund for insufficient items only
   return {
     amount: refundAmount || amountTotal,
     reason: itemNames.length > 0
@@ -73,13 +76,28 @@ async function start() {
   const connection = await connectWithRetry();
   const channel = await connection.createChannel();
 
-  await channel.assertQueue(QUEUE, { durable: true });
+  // DLX setup (for invalid messages only)
+  await channel.assertExchange(DLX, 'direct', { durable: true });
+
   await channel.assertQueue(DLQ, { durable: true });
+  await channel.bindQueue(DLQ, DLX, 'dlq');
+
+  await channel.assertQueue(QUEUE, {
+    durable: true,
+    arguments: {
+      'x-dead-letter-exchange': DLX,
+      'x-dead-letter-routing-key': 'dlq',
+    },
+  });
+
+  // Failure queue (NEW)
+  await channel.assertQueue(FAILURE_QUEUE, { durable: true });
+
   channel.prefetch(1);
 
   console.log(`[refund-management] Listening on queue: ${QUEUE}`);
-  console.log(`[refund-management] DLQ enabled: ${DLQ}`);
-  console.log(`[refund-management] Payment service: ${PAYMENT_SERVICE_URL}`);
+  console.log(`[refund-management] DLQ (invalid messages): ${DLQ}`);
+  console.log(`[refund-management] Failure queue (retry exhausted): ${FAILURE_QUEUE}`);
 
   channel.consume(QUEUE, async (msg) => {
     if (!msg) return;
@@ -88,55 +106,94 @@ async function start() {
     try {
       payload = JSON.parse(msg.content.toString());
     } catch {
-      console.error('[refund-management] Invalid JSON; sending to DLQ');
-      channel.sendToQueue(DLQ, msg.content, { persistent: true, contentType: 'application/json' });
-      channel.ack(msg);
+      console.error('[refund-management] Invalid JSON; rejecting to DLQ');
+      channel.reject(msg, false); // DLX handles
       return;
     }
 
     const paymentId = payload?.paymentId;
     if (!paymentId) {
-      console.error('[refund-management] Missing paymentId; sending to DLQ');
-      channel.sendToQueue(DLQ, msg.content, { persistent: true, contentType: 'application/json' });
-      channel.ack(msg);
+      console.error('[refund-management] Missing paymentId; rejecting to DLQ');
+      channel.reject(msg, false);
       return;
     }
 
+    const retryCount = msg.properties.headers?.['x-retry-count'] || 0;
+
     const { amount, reason } = buildRefundRequest(payload);
-    console.log('[refund-management] Processing refund:', JSON.stringify({ paymentId, amount, reason }));
+
+    console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId}`);
 
     try {
       const result = await sendRefund({ paymentId, amount, reason });
+
       if (result.ok) {
-        console.log('[refund-management] Refund triggered successfully');
+        console.log('[refund-management] Refund successful');
         channel.ack(msg);
         return;
       }
 
-      // 4xx is treated as permanent (already refunded / invalid state / not found)
+      // Business failure (4xx) → do not retry
       if (result.status >= 400 && result.status < 500) {
-        console.warn('[refund-management] Refund request rejected (ack):', result.status, result.text);
+        console.warn('[refund-management] Business failure (ack):', result.status, result.text);
         channel.ack(msg);
         return;
       }
 
-      console.error('[refund-management] Refund request failed; sending to DLQ:', result.status, result.text);
-      channel.sendToQueue(DLQ, msg.content, {
-        persistent: true,
-        contentType: 'application/json',
-        headers: {
-          'x-error': `refund_failed_${result.status}`,
-          'x-response': String(result.text || '').slice(0, 1000),
-        },
-      });
+      // System failure (5xx) → retry logic
+      if (retryCount < MAX_RETRIES) {
+        console.warn(`[refund-management] Retry ${retryCount + 1}/${MAX_RETRIES}`);
+
+        channel.sendToQueue(QUEUE, msg.content, {
+          persistent: true,
+          contentType: 'application/json',
+          headers: {
+            ...msg.properties.headers,
+            'x-retry-count': retryCount + 1,
+          },
+        });
+
+      } else {
+        console.error('[refund-management] Max retries reached → sending to failure queue');
+
+        channel.sendToQueue(FAILURE_QUEUE, msg.content, {
+          persistent: true,
+          contentType: 'application/json',
+          headers: {
+            ...msg.properties.headers,
+            'x-retry-count': retryCount,
+            'x-error': `refund_failed_${result.status}`,
+            'x-response': String(result.text || '').slice(0, 1000),
+          },
+        });
+      }
+
       channel.ack(msg);
+
     } catch (err) {
-      console.error('[refund-management] Refund request error; sending to DLQ:', err?.message || err);
-      channel.sendToQueue(DLQ, msg.content, {
-        persistent: true,
-        contentType: 'application/json',
-        headers: { 'x-error': err?.message || String(err) },
-      });
+      console.error('[refund-management] Network/system error:', err?.message);
+
+      if (retryCount < MAX_RETRIES) {
+        channel.sendToQueue(QUEUE, msg.content, {
+          persistent: true,
+          contentType: 'application/json',
+          headers: {
+            ...msg.properties.headers,
+            'x-retry-count': retryCount + 1,
+          },
+        });
+      } else {
+        channel.sendToQueue(FAILURE_QUEUE, msg.content, {
+          persistent: true,
+          contentType: 'application/json',
+          headers: {
+            ...msg.properties.headers,
+            'x-retry-count': retryCount,
+            'x-error': err?.message || String(err),
+          },
+        });
+      }
+
       channel.ack(msg);
     }
   });
@@ -146,4 +203,3 @@ start().catch((err) => {
   console.error('[refund-management] Fatal:', err?.stack || err);
   process.exit(1);
 });
-
