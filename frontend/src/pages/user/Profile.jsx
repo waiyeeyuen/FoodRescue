@@ -47,6 +47,10 @@ function toSingaporeDayKey(value) {
   }).format(parsed);
 }
 
+function getImpactCacheKey(userId) {
+  return `impact_profile_${String(userId || '')}`;
+}
+
 export default function UserProfile() {
   const { user } = useAuth();
 
@@ -61,6 +65,7 @@ export default function UserProfile() {
   });
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [profileUnavailable, setProfileUnavailable] = useState(false);
 
   const accountServiceUrl =
     import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
@@ -76,6 +81,7 @@ export default function UserProfile() {
     async function loadProfile() {
       try {
         setProfileLoading(true);
+        setProfileUnavailable(false);
         const response = await fetch(
           `${accountServiceUrl}/account/${encodeURIComponent(user.id)}`,
           { signal: controller.signal }
@@ -87,11 +93,18 @@ export default function UserProfile() {
 
         if (!controller.signal.aborted) {
           setProfile(data);
+          localStorage.setItem(getImpactCacheKey(user.id), JSON.stringify(data));
         }
       } catch (error) {
         if (!controller.signal.aborted) {
           console.error('Failed to load user profile:', error);
-          setProfile(null);
+          setProfileUnavailable(true);
+          try {
+            const cached = localStorage.getItem(getImpactCacheKey(user.id));
+            if (cached) {
+              setProfile(JSON.parse(cached));
+            }
+          } catch {}
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -183,7 +196,7 @@ export default function UserProfile() {
               Days saved
             </p>
             <p className="mt-3 text-4xl font-semibold text-[var(--brand-ink)]">
-              {impact.daysSaved} days
+              {profileUnavailable && !profile ? '—' : `${impact.daysSaved} days`}
             </p>
             <p className="mt-2 text-sm text-slate-600">
               Completed pickup days recorded in your impact history.
@@ -193,7 +206,7 @@ export default function UserProfile() {
                 Current streak
               </p>
               <p className="mt-2 text-2xl font-semibold text-slate-900">
-                {streakData.streak} day{streakData.streak === 1 ? '' : 's'}
+                {profileUnavailable && !profile ? '—' : `${streakData.streak} day${streakData.streak === 1 ? '' : 's'}`}
               </p>
               <div className="mt-3 flex items-center gap-2">
                 {streakData.recentDays.map((day) => (
@@ -221,6 +234,11 @@ export default function UserProfile() {
             <p className="mt-2 text-xs text-slate-500">
               Last completed rescue: {formatImpactDate(impact.lastSuccessfulOrderAt)}
             </p>
+            {profileUnavailable && !profile && (
+              <p className="mt-2 text-xs text-amber-600">
+                Impact data is temporarily unavailable from Firebase right now.
+              </p>
+            )}
           </div>
         </div>
       </section>
@@ -235,7 +253,7 @@ export default function UserProfile() {
               {card.label}
             </p>
             <p className="mt-3 text-3xl font-semibold text-slate-900">
-              {card.value}
+              {profileUnavailable && !profile ? '—' : card.value}
               {card.suffix ? <span className="ml-2 text-sm text-slate-500">{card.suffix}</span> : null}
             </p>
           </div>

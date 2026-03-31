@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { BellIcon, ShoppingCartIcon } from 'lucide-react';
@@ -30,21 +30,10 @@ function UserLayout() {
     [notifications]
   );
 
-  const handleLogout = () => {
-    logout();
-    window.location.href = '/login';
-  };
+  const loadNotifications = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!user?.id) return;
 
-  useEffect(() => {
-    if (!user?.id) {
-      setNotifications([]);
-      setNotificationsError('');
-      return undefined;
-    }
-
-    let mounted = true;
-
-    async function loadNotifications({ silent = false } = {}) {
       try {
         if (!silent) setNotificationsLoading(true);
 
@@ -57,26 +46,37 @@ function UserLayout() {
           throw new Error(data?.error || 'Failed to load notifications');
         }
 
-        if (mounted) {
-          setNotifications(Array.isArray(data) ? data : []);
-          setNotificationsError('');
-        }
+        setNotifications(Array.isArray(data) ? data : []);
+        setNotificationsError('');
       } catch (error) {
-        if (mounted) {
-          setNotificationsError(error?.message || 'Failed to load notifications');
-        }
+        setNotificationsError(error?.message || 'Failed to load notifications');
       } finally {
-        if (mounted && !silent) {
+        if (!silent) {
           setNotificationsLoading(false);
         }
       }
-    }
+    },
+    [notificationServiceUrl, user?.id]
+  );
 
+  const handleLogout = () => {
+    logout();
+    window.location.href = '/login';
+  };
+
+  useEffect(() => {
+    if (!user?.id) {
+      setNotifications([]);
+      setNotificationsError('');
+      return undefined;
+    }
     loadNotifications();
 
     const intervalId = window.setInterval(() => {
-      loadNotifications({ silent: true });
-    }, 15000);
+      if (document.visibilityState === 'visible') {
+        loadNotifications({ silent: true });
+      }
+    }, 30000);
 
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
@@ -87,11 +87,15 @@ function UserLayout() {
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      mounted = false;
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [notificationServiceUrl, user?.id]);
+  }, [loadNotifications, user?.id]);
+
+  useEffect(() => {
+    if (!notificationsOpen || !user?.id) return;
+    loadNotifications({ silent: true });
+  }, [loadNotifications, notificationsOpen, user?.id]);
 
   useEffect(() => {
     if (!notificationsOpen || !user?.id || unreadCount === 0) return;

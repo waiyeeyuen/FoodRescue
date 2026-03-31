@@ -27,6 +27,9 @@ import {
 } from '@/components/ui/tooltip';
 
 const MAX_RECOMMENDATIONS = 4;
+function getImpactCacheKey(userId) {
+  return `impact_profile_${String(userId || '')}`;
+}
 
 function normalizeImpactSnapshot(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
@@ -259,6 +262,7 @@ export default function UserHome() {
   const [geminiReasoning, setGeminiReasoning] = useState('');
   const [geminiUsed, setGeminiUsed] = useState(false);
   const [impactProfile, setImpactProfile] = useState(null);
+  const [impactUnavailable, setImpactUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -277,6 +281,7 @@ export default function UserHome() {
 
     async function loadImpactProfile() {
       try {
+        setImpactUnavailable(false);
         const response = await fetch(
           `${accountServiceUrl}/account/${encodeURIComponent(user.id)}`,
           { signal: controller.signal }
@@ -287,17 +292,25 @@ export default function UserHome() {
         }
 
         if (!controller.signal.aborted) {
-          setImpactProfile({
+          const nextImpactProfile = {
             ...(data?.impact || {}),
             co2: data?.co2 ?? data?.impact?.co2KgSaved ?? 0,
             water: data?.water ?? data?.impact?.waterLitersSaved ?? 0,
             days: data?.days ?? data?.impact?.daysSaved ?? 0,
-          });
+          };
+          setImpactProfile(nextImpactProfile);
+          localStorage.setItem(getImpactCacheKey(user.id), JSON.stringify(nextImpactProfile));
         }
       } catch (error) {
         if (!controller.signal.aborted) {
           console.error('Failed to load impact profile:', error);
-          setImpactProfile(null);
+          setImpactUnavailable(true);
+          try {
+            const cached = localStorage.getItem(getImpactCacheKey(user.id));
+            if (cached) {
+              setImpactProfile(JSON.parse(cached));
+            }
+          } catch {}
         }
       }
     }
@@ -315,74 +328,76 @@ export default function UserHome() {
         setLoading(true);
         setError(null);
 
-        const inventoryRes = await fetch(`${inventoryServiceUrl}/inventory/active`, {
+        const inventoryPromise = fetch(`${inventoryServiceUrl}/inventory/active`, {
           signal: controller.signal,
+        }).then(async (inventoryRes) => {
+          if (!inventoryRes.ok) {
+            let message = 'Failed to load active listings';
+            try {
+              const body = await inventoryRes.json();
+              message = body?.error || message;
+            } catch {}
+            throw new Error(message);
+          }
+
+          const inventoryData = await inventoryRes.json();
+          return Array.isArray(inventoryData?.data)
+            ? inventoryData.data
+            : Array.isArray(inventoryData)
+              ? inventoryData
+              : [];
         });
 
-        if (!inventoryRes.ok) {
-          let message = 'Failed to load active listings';
-          try {
-            const body = await inventoryRes.json();
-            message = body?.error || message;
-          } catch {}
-          throw new Error(message);
-        }
-
-        const inventoryData = await inventoryRes.json();
-        const inventoryListings = Array.isArray(inventoryData?.data)
-          ? inventoryData.data
-          : Array.isArray(inventoryData)
-            ? inventoryData
-            : [];
-
-        setActiveListings(inventoryListings);
-
-        if (user?.id) {
-          try {
-            const recRes = await fetch(
+        const recommendationsPromise = user?.id
+          ? fetch(
               `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}?maxListings=${MAX_RECOMMENDATIONS}`,
               { signal: controller.signal }
-            );
+            ).then(async (recRes) => {
+              if (!recRes.ok) {
+                throw new Error('Failed to load recommendations');
+              }
 
-            if (!recRes.ok) {
-              throw new Error('Failed to load recommendations');
-            }
+              const recData = await recRes.json();
+              const recommended = Array.isArray(recData?.recommendedListings)
+                ? recData.recommendedListings
+                : [];
+              const fallback = Array.isArray(recData?.fallbackListings)
+                ? recData.fallbackListings
+                : [];
+              const merged = [...recommended, ...fallback];
+              const seen = new Set();
+              const deduped = [];
 
-            const recData = await recRes.json();
+              for (const item of merged) {
+                const id = getListingId(item);
+                if (!id || seen.has(id)) continue;
+                seen.add(id);
+                deduped.push(item);
+              }
 
-            const recommended = Array.isArray(recData?.recommendedListings)
-              ? recData.recommendedListings
-              : [];
+              return {
+                listings: deduped,
+                geminiUsed: Boolean(recData?.gemini?.used),
+                geminiReasoning: recData?.gemini?.reasoning || '',
+              };
+            })
+          : Promise.resolve({
+              listings: [],
+              geminiUsed: false,
+              geminiReasoning: '',
+            });
 
-            const fallback = Array.isArray(recData?.fallbackListings)
-              ? recData.fallbackListings
-              : [];
+        const [inventoryListings, recommendationResult] = await Promise.all([
+          inventoryPromise,
+          recommendationsPromise,
+        ]);
 
-            const merged = [...recommended, ...fallback];
-            const seen = new Set();
-            const deduped = [];
+        if (controller.signal.aborted) return;
 
-            for (const item of merged) {
-              const id = getListingId(item);
-              if (!id || seen.has(id)) continue;
-              seen.add(id);
-              deduped.push(item);
-            }
-
-            setRecommendedListings(deduped);
-            setGeminiUsed(Boolean(recData?.gemini?.used));
-            setGeminiReasoning(recData?.gemini?.reasoning || '');
-          } catch (err) {
-            console.error('Failed to load recommendations:', err);
-            setRecommendedListings([]);
-            setGeminiUsed(false);
-            setGeminiReasoning('');
-          }
-        } else {
-          setRecommendedListings([]);
-          setGeminiUsed(false);
-          setGeminiReasoning('');
-        }
+        setActiveListings(inventoryListings);
+        setRecommendedListings(recommendationResult.listings);
+        setGeminiUsed(recommendationResult.geminiUsed);
+        setGeminiReasoning(recommendationResult.geminiReasoning);
       } catch (e) {
         if (e?.name === 'AbortError') return;
         setError(e?.message || 'Failed to load homepage');
@@ -734,16 +749,18 @@ export default function UserHome() {
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                     {card.label}
                   </p>
-                  <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>
-                    {card.value}
-                    <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
-                  </p>
-                  {card.label === 'Days saved' ? (
-                    <div className="mt-3">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <p className="text-xs font-medium text-slate-400">
-                          {streakData.streak} day{streakData.streak === 1 ? '' : 's'} in a row
-                        </p>
+                <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>
+                  {impactUnavailable && !impactProfile ? '—' : card.value}
+                  <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
+                </p>
+                {card.label === 'Days saved' ? (
+                  <div className="mt-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs font-medium text-slate-400">
+                        {impactUnavailable && !impactProfile
+                          ? 'Impact data unavailable'
+                          : `${streakData.streak} day${streakData.streak === 1 ? '' : 's'} in a row`}
+                      </p>
                         <div className="flex items-center gap-2">
                           {streakData.recentDays.map((day) => (
                             <div

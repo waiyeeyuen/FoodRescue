@@ -14,6 +14,8 @@ dotenv.config({ path: path.resolve(__dirname, './.env') });
 
 const app = express();
 app.use(express.json());
+const NOTIFICATION_CACHE_TTL_MS = 30 * 1000;
+const notificationCache = new Map();
 
 function toDateValue(value) {
   if (!value) return null;
@@ -35,27 +37,84 @@ function serializeNotification(doc) {
   };
 }
 
+function isQuotaError(error) {
+  const message = String(error?.message || '').toUpperCase();
+  return (
+    message.includes('RESOURCE_EXHAUSTED') ||
+    message.includes('QUOTA EXCEEDED') ||
+    message.includes('QUOTA_EXCEEDED')
+  );
+}
+
+function getCachedNotifications(userId) {
+  const cacheKey = String(userId || '');
+  const cached = notificationCache.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    notificationCache.delete(cacheKey);
+    return null;
+  }
+  return cached.value;
+}
+
+function setCachedNotifications(userId, notifications) {
+  notificationCache.set(String(userId || ''), {
+    value: Array.isArray(notifications) ? notifications : [],
+    expiresAt: Date.now() + NOTIFICATION_CACHE_TTL_MS,
+  });
+}
+
+function upsertCachedNotification(userId, notification) {
+  if (!userId || !notification) return;
+
+  const existing = getCachedNotifications(userId) || [];
+  const next = [
+    notification,
+    ...existing.filter((entry) => String(entry?.id || '') !== String(notification.id || '')),
+  ]
+    .sort((a, b) => toTimestamp(b.createdAt || b.created_at) - toTimestamp(a.createdAt || a.created_at))
+    .slice(0, 50);
+
+  setCachedNotifications(userId, next);
+}
+
+function invalidateNotificationCache(userId) {
+  if (!userId) return;
+  notificationCache.delete(String(userId));
+}
+
 async function getNotificationsForUser(userId) {
-  const [camelSnapshot, snakeSnapshot] = await Promise.all([
-    db.collection('notifications')
-      .where('userId', '==', userId)
-      .limit(100)
-      .get(),
-    db.collection('notifications')
-      .where('user_id', '==', userId)
-      .limit(100)
-      .get(),
-  ]);
+  const cached = getCachedNotifications(userId);
+  if (cached) return cached;
+
+  const camelSnapshot = await db.collection('notifications')
+    .where('userId', '==', userId)
+    .limit(100)
+    .get();
 
   const merged = new Map();
 
-  [...camelSnapshot.docs, ...snakeSnapshot.docs].forEach((doc) => {
+  camelSnapshot.docs.forEach((doc) => {
     merged.set(doc.id, serializeNotification(doc));
   });
 
-  return Array.from(merged.values())
+  if (merged.size === 0) {
+    const snakeSnapshot = await db.collection('notifications')
+      .where('user_id', '==', userId)
+      .limit(100)
+      .get();
+
+    snakeSnapshot.docs.forEach((doc) => {
+      merged.set(doc.id, serializeNotification(doc));
+    });
+  }
+
+  const notifications = Array.from(merged.values())
     .sort((a, b) => toTimestamp(b.createdAt || b.created_at) - toTimestamp(a.createdAt || a.created_at))
     .slice(0, 50);
+
+  setCachedNotifications(userId, notifications);
+  return notifications;
 }
 
 // Start RabbitMQ consumer
@@ -71,6 +130,13 @@ async function startConsumer() {
       await db.collection('notifications')
         .doc(data.docId)
         .update({ status });
+
+      upsertCachedNotification(data.userId, {
+        id: data.docId,
+        ...data,
+        status,
+        createdAt: new Date().toISOString(),
+      });
         
       channel.ack(msg);
     });
@@ -82,6 +148,9 @@ app.get('/notifications/:user_id', async (req, res) => {
   try {
     res.json(await getNotificationsForUser(req.params.user_id));
   } catch (err) {
+    if (isQuotaError(err)) {
+      return res.json(getCachedNotifications(req.params.user_id) || []);
+    }
     console.error('[notifications/list] ❌ Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -105,9 +174,20 @@ app.patch('/notifications/:user_id/read-all', async (req, res) => {
     });
 
     await batch.commit();
+    setCachedNotifications(
+      req.params.user_id,
+      notifications.map((notification) => ({
+        ...notification,
+        read: true,
+        readAt: new Date().toISOString(),
+      }))
+    );
 
     res.json({ success: true, updated: unreadNotifications.length });
   } catch (err) {
+    if (isQuotaError(err)) {
+      return res.json({ success: true, updated: 0, stale: true });
+    }
     console.error('[notifications/read-all] ❌ Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -134,35 +214,43 @@ app.post('/notifications/send', async (req, res) => {
       hasInsufficientItems: Array.isArray(insufficientItems) && insufficientItems.length > 0
     }));
 
-    if (!resolvedPhone && String(type || '').toUpperCase() !== 'PUSH') {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing destination phone (provide phone/userPhone, set DEFAULT_SMS_TO, or store users/{userId}.phone)'
-      });
-    }
-
     const normalizedType = (type || '').toUpperCase();
+    const channel = getChannel(normalizedType);
 
     const notificationData = {
       userId,
       type: normalizedType,
       title: getTitle(normalizedType),
       message: getMessage(normalizedType),
-      channel: getChannel(normalizedType),
+      channel,
       userPhone: resolvedPhone,
       status: 'PENDING',
       read: false,
+      orderId: orderId || null,
     };
+
+    if (channel === 'SMS' && !resolvedPhone) {
+      console.warn(
+        `[notifications/send] ⚠️ Missing destination phone for ${normalizedType}; storing in-app record only`
+      );
+    }
 
     const docRef = await db.collection('notifications').add({
       ...notificationData,
       createdAt: FieldValue.serverTimestamp(),
     });
+    invalidateNotificationCache(userId);
 
     const status = await sendNotification(notificationData);
     console.log('[notifications/send] Delivery status:', status);
 
     await db.collection('notifications').doc(docRef.id).update({ status });
+    upsertCachedNotification(userId, {
+      id: docRef.id,
+      ...notificationData,
+      status,
+      createdAt: new Date().toISOString(),
+    });
 
     res.json({ success: true });
   } catch (err) {

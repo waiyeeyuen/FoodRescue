@@ -17,6 +17,9 @@ app.use(express.json())
 const USERS = db.collection('users')
 const RESTAURANTS = db.collection('restaurants')
 const JWT_SECRET = process.env.JWT_SECRET || 'foodrescue-secret' // Use env variable in production
+const ACCOUNT_CACHE_TTL_MS = 60 * 1000
+const accountCache = new Map()
+const leaderboardCache = new Map()
 
 function createDefaultUserImpact() {
   return {
@@ -77,6 +80,60 @@ function buildLegacyImpactFields(safeData, impact) {
   };
 }
 
+function toDateValue(value) {
+  if (!value) return null
+  if (typeof value?.toDate === 'function') return value.toDate()
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function toIsoDate(value) {
+  return toDateValue(value)?.toISOString() || null
+}
+
+function isQuotaError(error) {
+  const message = String(error?.message || '').toUpperCase()
+  return (
+    message.includes('RESOURCE_EXHAUSTED') ||
+    message.includes('QUOTA EXCEEDED') ||
+    message.includes('QUOTA_EXCEEDED')
+  )
+}
+
+function getCachedAccount(cacheKey) {
+  const cached = accountCache.get(String(cacheKey || ''))
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    accountCache.delete(String(cacheKey || ''))
+    return null
+  }
+  return cached.value
+}
+
+function setCachedAccount(cacheKey, value) {
+  accountCache.set(String(cacheKey || ''), {
+    value,
+    expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS,
+  })
+}
+
+function getCachedLeaderboard(cacheKey) {
+  const cached = leaderboardCache.get(String(cacheKey || ''))
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    leaderboardCache.delete(String(cacheKey || ''))
+    return null
+  }
+  return cached.value
+}
+
+function setCachedLeaderboard(cacheKey, value) {
+  leaderboardCache.set(String(cacheKey || ''), {
+    value,
+    expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS,
+  })
+}
+
 async function ensureLegacyImpactFields(docRef, safeData, impact) {
   const updates = {};
 
@@ -86,7 +143,11 @@ async function ensureLegacyImpactFields(docRef, safeData, impact) {
 
   if (Object.keys(updates).length === 0) return;
 
-  await docRef.set(updates, { merge: true });
+  try {
+    await docRef.set(updates, { merge: true });
+  } catch (error) {
+    console.warn('[account] Skipping legacy impact backfill:', error?.message || error)
+  }
 }
 
 function sanitizeAccountDocument(doc, defaultsFactory) {
@@ -115,15 +176,73 @@ function sanitizeAccountDocument(doc, defaultsFactory) {
   return {
     id: doc.id,
     ...safeData,
+    createdAt: toIsoDate(safeData.createdAt),
+    updatedAt: toIsoDate(safeData.updatedAt),
     ...legacyImpactFields,
     city: typeof safeData.city === 'string' ? safeData.city : '',
-    impact
+    impact: {
+      ...impact,
+      lastSuccessfulOrderAt: toIsoDate(impact.lastSuccessfulOrderAt),
+    }
   };
 }
 
 function sanitizeLeaderboardValue(value) {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function getMetricValueFromUserDoc(doc, field, impactKey) {
+  const data = doc?.data?.() || {}
+  const impact = data.impact && typeof data.impact === 'object' ? data.impact : {}
+  return sanitizeLeaderboardValue(data?.[field] ?? impact?.[impactKey] ?? 0)
+}
+
+async function buildTopMetricLeaderboard({ field, impactKey, limit, currentUserId = '' }) {
+  const topSnapshot = await USERS.orderBy(field, 'desc').limit(limit).get()
+  const top = topSnapshot.docs.map((doc, index) => {
+    const data = doc.data() || {}
+    return {
+      rank: index + 1,
+      userId: doc.id,
+      username: data.username || `User ${index + 1}`,
+      value: getMetricValueFromUserDoc(doc, field, impactKey),
+    }
+  })
+
+  let currentUser = null
+
+  if (currentUserId) {
+    const currentDoc = await USERS.doc(currentUserId).get()
+    if (currentDoc.exists) {
+      const currentData = currentDoc.data() || {}
+      const currentValue = getMetricValueFromUserDoc(currentDoc, field, impactKey)
+      const inTop = top.find((entry) => entry.userId === currentUserId)
+
+      if (inTop) {
+        currentUser = inTop
+      } else {
+        try {
+          const countSnapshot = await USERS.where(field, '>', currentValue).count().get()
+          currentUser = {
+            rank: Number(countSnapshot?.data()?.count || 0) + 1,
+            userId: currentUserId,
+            username: currentData.username || 'You',
+            value: currentValue,
+          }
+        } catch {
+          currentUser = {
+            rank: null,
+            userId: currentUserId,
+            username: currentData.username || 'You',
+            value: currentValue,
+          }
+        }
+      }
+    }
+  }
+
+  return { top, currentUser }
 }
 
 function buildMetricLeaderboard(entries, metric, limit, currentUserId = '') {
@@ -322,22 +441,52 @@ app.get('/account/leaderboards/users', async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(25, Number(req.query.limit ?? 10) || 10));
     const currentUserId = String(req.query.userId || '').trim();
+    const cacheKey = `users:${limit}:${currentUserId || 'anon'}`
+    const [co2KgSaved, waterLitersSaved] = await Promise.all([
+      buildTopMetricLeaderboard({
+        field: 'co2',
+        impactKey: 'co2KgSaved',
+        limit,
+        currentUserId,
+      }),
+      buildTopMetricLeaderboard({
+        field: 'water',
+        impactKey: 'waterLitersSaved',
+        limit,
+        currentUserId,
+      }),
+    ]);
 
-    const snapshot = await USERS.get();
-    const users = snapshot.docs.map((doc) => sanitizeAccountDocument(doc, createDefaultUserImpact));
-
-    const co2KgSaved = buildMetricLeaderboard(users, 'co2KgSaved', limit, currentUserId);
-    const waterLitersSaved = buildMetricLeaderboard(users, 'waterLitersSaved', limit, currentUserId);
-
-    res.json({
+    const payload = {
       success: true,
       limit,
       leaderboards: {
         co2KgSaved,
         waterLitersSaved,
       },
-    });
+    };
+    setCachedLeaderboard(cacheKey, payload);
+
+    res.json(payload);
   } catch (err) {
+    const limit = Math.max(1, Math.min(25, Number(req.query.limit ?? 10) || 10));
+    const currentUserId = String(req.query.userId || '').trim();
+    const cacheKey = `users:${limit}:${currentUserId || 'anon'}`
+    const cached = getCachedLeaderboard(cacheKey)
+    if (isQuotaError(err)) {
+      if (cached) {
+        return res.json({ ...cached, stale: true })
+      }
+      return res.json({
+        success: true,
+        stale: true,
+        limit,
+        leaderboards: {
+          co2KgSaved: { top: [], currentUser: null },
+          waterLitersSaved: { top: [], currentUser: null },
+        },
+      })
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -353,10 +502,17 @@ app.get('/account/:id', async (req, res) => {
 
     const rawData = doc.data() || {};
     const safeDoc = sanitizeAccountDocument(doc, createDefaultUserImpact);
+    setCachedAccount(req.params.id, safeDoc);
     await ensureLegacyImpactFields(USERS.doc(req.params.id), rawData, safeDoc.impact);
     res.json(safeDoc);
 
   } catch (err) {
+    if (isQuotaError(err)) {
+      const cached = getCachedAccount(req.params.id)
+      if (cached) {
+        return res.json(cached)
+      }
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -372,9 +528,16 @@ app.get('/account/restaurant/:id', async (req, res) => {
 
     const rawData = doc.data() || {};
     const safeDoc = sanitizeAccountDocument(doc, createDefaultRestaurantImpact);
+    setCachedAccount(`restaurant:${req.params.id}`, safeDoc);
     await ensureLegacyImpactFields(RESTAURANTS.doc(req.params.id), rawData, safeDoc.impact);
     res.json(safeDoc);
   } catch (err) {
+    if (isQuotaError(err)) {
+      const cached = getCachedAccount(`restaurant:${req.params.id}`)
+      if (cached) {
+        return res.json(cached)
+      }
+    }
     res.status(500).json({ error: err.message });
   }
 });

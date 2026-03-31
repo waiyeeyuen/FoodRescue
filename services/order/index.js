@@ -5,6 +5,10 @@ import admin, { db } from './firebaseAdmin.js'
 const app = express()
 const USERS = db.collection('users')
 const RESTAURANTS = db.collection('restaurants')
+const NOTIFICATION_SERVICE_URL =
+  process.env.NOTIFICATION_SERVICE_URL ||
+  process.env.NOTIFICATION_URL ||
+  'http://notification:3006'
 const IMPACT_CO2_PER_MEAL = 1.1
 const IMPACT_WATER_PER_MEAL = 81
 const IMPACT_TIMEZONE = 'Asia/Singapore'
@@ -165,6 +169,16 @@ function getEstimatedMoneySaved(item) {
   }
 
   return Number(((originalPrice - unitAmount) * quantity).toFixed(2))
+}
+
+function fireAndForgetNotification(body) {
+  fetch(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch((err) => {
+    console.warn('[order] Notification fire-and-forget failed:', err.message)
+  })
 }
 
 async function applyCompletedPickupImpact({ order, item, completedAt }) {
@@ -504,6 +518,20 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
       getItemField(previousMatchedItem, 'fulfillmentStatus', 'FulfillmentStatus'),
       'new'
     );
+    const customerId = String(data.customerId || '')
+
+    if (
+      customerId &&
+      nextStatus === 'ready' &&
+      previousStatus !== 'ready' &&
+      previousStatus !== 'completed'
+    ) {
+      fireAndForgetNotification({
+        userId: customerId,
+        type: 'ORDER_READY',
+        orderId
+      })
+    }
 
     if (nextStatus === 'completed' && previousStatus !== 'completed' && nextMatchedItem) {
       await applyCompletedPickupImpact({
@@ -511,6 +539,14 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
         item: nextMatchedItem,
         completedAt: now
       });
+    }
+
+    if (customerId && nextOrderStatus === 'completed' && String(data.status || '') !== 'completed') {
+      fireAndForgetNotification({
+        userId: customerId,
+        type: 'ORDER_COMPLETED',
+        orderId
+      })
     }
 
     res.json({

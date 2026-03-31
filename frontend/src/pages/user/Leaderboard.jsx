@@ -47,11 +47,16 @@ function LeaderboardPanel({ title, description, metricKey, data }) {
   );
 }
 
+function getLeaderboardCacheKey(userId) {
+  return `leaderboards_${String(userId || '')}`;
+}
+
 export default function UserLeaderboard() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [leaderboards, setLeaderboards] = useState(null);
+  const [stale, setStale] = useState(false);
 
   const accountServiceUrl =
     import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
@@ -69,6 +74,7 @@ export default function UserLeaderboard() {
       try {
         setLoading(true);
         setError('');
+        setStale(false);
 
         const params = new URLSearchParams({
           userId: user.id,
@@ -87,11 +93,25 @@ export default function UserLeaderboard() {
 
         if (!controller.signal.aborted) {
           setLeaderboards(data?.leaderboards || null);
+          setStale(Boolean(data?.stale));
+          localStorage.setItem(
+            getLeaderboardCacheKey(user.id),
+            JSON.stringify({ leaderboards: data?.leaderboards || null })
+          );
         }
       } catch (fetchError) {
         if (fetchError?.name === 'AbortError') return;
         if (!controller.signal.aborted) {
           setError(fetchError?.message || 'Failed to load leaderboards');
+          try {
+            const cached = localStorage.getItem(getLeaderboardCacheKey(user.id));
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              setLeaderboards(parsed?.leaderboards || null);
+              setStale(true);
+              return;
+            }
+          } catch {}
           setLeaderboards(null);
         }
       } finally {
@@ -156,20 +176,27 @@ export default function UserLeaderboard() {
           {error}
         </div>
       ) : (
-        <div className="grid gap-6 xl:grid-cols-2">
-          <LeaderboardPanel
-            title="Top 10 By CO2 Saved"
-            description="Higher rank means more completed rescue impact."
-            metricKey="co2KgSaved"
-            data={leaderboards?.co2KgSaved}
-          />
-          <LeaderboardPanel
-            title="Top 10 By Water Saved"
-            description="A second view of sustainability impact across the user base."
-            metricKey="waterLitersSaved"
-            data={leaderboards?.waterLitersSaved}
-          />
-        </div>
+        <>
+          {stale && (
+            <div className="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              Showing cached leaderboard data while Firebase is temporarily unavailable.
+            </div>
+          )}
+          <div className="grid gap-6 xl:grid-cols-2">
+            <LeaderboardPanel
+              title="Top 10 By CO2 Saved"
+              description="Higher rank means more completed rescue impact."
+              metricKey="co2KgSaved"
+              data={leaderboards?.co2KgSaved}
+            />
+            <LeaderboardPanel
+              title="Top 10 By Water Saved"
+              description="A second view of sustainability impact across the user base."
+              metricKey="waterLitersSaved"
+              data={leaderboards?.waterLitersSaved}
+            />
+          </div>
+        </>
       )}
     </div>
   );

@@ -28,6 +28,9 @@ export async function sendNotification(notificationData) {
   
   try {
     switch (channel) {
+      case 'IN_APP':
+        console.log('✅ In-app notification stored for:', userId);
+        return 'STORED';
       case 'SMS':
         if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
           throw new Error('Twilio env vars missing (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER)');

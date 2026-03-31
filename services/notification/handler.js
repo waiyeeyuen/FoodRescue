@@ -40,6 +40,8 @@ export function getTitle(type) {
     'ORDER_CONFIRMED':  'Order Confirmed 🎉',
     'ORDER_PARTIAL':    'Partial Order Confirmed ⚠️',
     'ORDER_REFUNDED':   'Order Refunded 💸',
+    'ORDER_READY':      'Ready for Collection 🍱',
+    'ORDER_COMPLETED':  'Order Completed ✅',
   };
   return titles[type] || 'New Notification';
 }
@@ -52,6 +54,8 @@ export function getMessage(type) {
     'ORDER_CONFIRMED':  'Your FoodRescue order has been confirmed!',
     'ORDER_PARTIAL':    'Some items were out of stock. Your order was partially confirmed.',
     'ORDER_REFUNDED':   'All items were out of stock. Your order has been fully refunded.',
+    'ORDER_READY':      'Food is ready. Please collect within 1 hour.',
+    'ORDER_COMPLETED':  'Your FoodRescue order has been marked as completed.',
   };
   return messages[type] || 'New update from FoodRescue.';
 }
@@ -64,6 +68,8 @@ export function getChannel(type) {
     'ORDER_CONFIRMED':  'SMS',
     'ORDER_PARTIAL':    'SMS',
     'ORDER_REFUNDED':   'SMS',
+    'ORDER_READY':      'SMS',
+    'ORDER_COMPLETED':  'IN_APP',
   };
   return channels[type] || 'PUSH';
 }
