@@ -192,7 +192,6 @@ async function startConsumer() {
   const channel = await connection.createChannel();
   await channel.assertQueue(QUEUE, { durable: true });
   await channel.assertQueue(DLQ, { durable: true });
-  await channel.assertQueue(ERROR_QUEUE, { durable: true });
   channel.prefetch(1);
 
   console.log(`[Consumer] ✅ Listening on queue: ${QUEUE}`);
