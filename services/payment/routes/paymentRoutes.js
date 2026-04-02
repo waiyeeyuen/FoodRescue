@@ -3,6 +3,7 @@ import {
   healthCheck,
   getAllPayments,
   getPaymentById,
+  getPaymentByOrderId,
   createCheckoutSession,
   refundPayment,
   logPayment,
@@ -14,6 +15,7 @@ const router = express.Router();
 
 router.get("/health", healthCheck);
 router.get("/", getAllPayments);
+router.get("/order/:orderId", getPaymentByOrderId);
 router.get("/:paymentId", getPaymentById);
 router.post("/checkout-session", createCheckoutSession);
 router.post("/confirm-session", confirmCheckoutSession);

@@ -6,10 +6,12 @@ import {db} from '../firebase/firebaseAdmin.js'
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const app = express()
+const INVENTORY = db.collection('inventory')
+const DELETED_LISTINGS = db.collection('deleted_listings')
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
-  methods: ["GET", "POST"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 app.use(cors(corsOptions))
@@ -48,6 +50,119 @@ async function readOutsystemsBody(response) {
   } catch {
     return raw;
   }
+}
+
+function getField(item, ...keys) {
+  for (const key of keys) {
+    if (item && item[key] !== undefined && item[key] !== null) return item[key]
+  }
+  return undefined
+}
+
+function toSerializableDate(value) {
+  if (!value) return null
+  if (typeof value?.toDate === 'function') return value.toDate().toISOString()
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+  return parsed.toISOString()
+}
+
+function buildDeletedListingRecord({
+  listingId,
+  listingSnapshot,
+  deleteSummary,
+  deletedByRestaurantId,
+  deletedByRestaurantName,
+  reason,
+}) {
+  const listing = listingSnapshot && typeof listingSnapshot === 'object' ? listingSnapshot : {}
+  const deletedAt = new Date().toISOString()
+
+  return {
+    listingId,
+    Id: listingId,
+    status: 'deleted',
+    restaurantId: String(
+      getField(listing, 'restaurantId', 'RestaurantId') || deletedByRestaurantId || ''
+    ),
+    restaurantName: String(
+      getField(listing, 'restaurantName', 'RestaurantName') || deletedByRestaurantName || ''
+    ),
+    itemName: String(getField(listing, 'itemName', 'ItemName', 'name', 'Name') || ''),
+    description: String(getField(listing, 'description', 'Description') || ''),
+    price: Number(getField(listing, 'price', 'Price') ?? 0) || 0,
+    originalPrice:
+      getField(listing, 'originalPrice', 'OriginalPrice') == null
+        ? null
+        : Number(getField(listing, 'originalPrice', 'OriginalPrice')),
+    quantity: Number(getField(listing, 'quantity', 'Quantity') ?? 0) || 0,
+    expiryTime: String(getField(listing, 'expiryTime', 'ExpiryTime') || ''),
+    imageURL: String(getField(listing, 'imageURL', 'ImageURL', 'imageUrl', 'ImageUrl') || ''),
+    cuisineType: String(getField(listing, 'cuisineType', 'CuisineType') || ''),
+    deletedAt,
+    deletedReason: String(reason || 'restaurant_removed_listing'),
+    deletedByRestaurantId: String(deletedByRestaurantId || ''),
+    deletedByRestaurantName: String(deletedByRestaurantName || ''),
+    summary: {
+      refundedOrders: Number(deleteSummary?.refundedOrders || 0),
+      affectedCustomers: Number(deleteSummary?.affectedCustomers || 0),
+      totalListingUnits: Number(deleteSummary?.totalListingUnits || 0),
+      totalRefundAmount: Number(deleteSummary?.totalRefundAmount || 0),
+      notificationsSent: Number(deleteSummary?.notificationsSent || 0),
+      notificationsFailed: Number(deleteSummary?.notificationsFailed || 0),
+      rewardsRestored: Number(deleteSummary?.rewardsRestored || 0),
+      rewardsRestoreFailed: Number(deleteSummary?.rewardsRestoreFailed || 0),
+    },
+    listing,
+  }
+}
+
+async function deleteListingInOutSystems(listingId) {
+  const url = `${OUTSYSTEMS_BASE}/DeleteFoodListing?listingId=${encodeURIComponent(listingId)}`
+
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  })
+
+  const data = await readOutsystemsBody(response)
+
+  if (!response.ok) {
+    const error = new Error('Failed to delete listing in OutSystems')
+    error.status = response.status
+    error.data = data
+    throw error
+  }
+
+  if (data && typeof data === 'object' && data.success === false) {
+    const error = new Error(data.message || 'OutSystems rejected the delete request')
+    error.status = 502
+    error.data = data
+    throw error
+  }
+
+  return data
+}
+
+async function archiveDeletedListing({
+  listingId,
+  listingSnapshot,
+  deleteSummary,
+  deletedByRestaurantId,
+  deletedByRestaurantName,
+  reason,
+}) {
+  const record = buildDeletedListingRecord({
+    listingId,
+    listingSnapshot,
+    deleteSummary,
+    deletedByRestaurantId,
+    deletedByRestaurantName,
+    reason,
+  })
+
+  await DELETED_LISTINGS.doc(String(listingId)).set(record, { merge: true })
+  return record
 }
 
 function fileToDataUri(file) {
@@ -227,6 +342,34 @@ app.get('/inventory/active', async (req, res) => {
   }
 });
 
+app.get('/inventory/restaurant/:restaurantId/deleted', async (req, res) => {
+  try {
+    const { restaurantId } = req.params
+    const snapshot = await DELETED_LISTINGS.where('restaurantId', '==', String(restaurantId)).get()
+
+    const deletedListings = snapshot.docs
+      .map((doc) => {
+        const data = doc.data() || {}
+        return {
+          id: doc.id,
+          ...data,
+          listingId: String(data.listingId || data.Id || doc.id),
+          Id: String(data.Id || data.listingId || doc.id),
+          deletedAt: toSerializableDate(data.deletedAt),
+        }
+      })
+      .sort((a, b) => {
+        const aTime = a.deletedAt ? new Date(a.deletedAt).getTime() : 0
+        const bTime = b.deletedAt ? new Date(b.deletedAt).getTime() : 0
+        return bTime - aTime
+      })
+
+    return res.json(deletedListings)
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
+})
+
 // Get listings by restaurant ID
 app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
   try {
@@ -249,6 +392,57 @@ app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.delete('/inventory/listings/:id', async (req, res) => {
+  try {
+    const listingId = String(req.params.id || '').trim()
+    if (!listingId) {
+      return res.status(400).json({ error: 'listing id is required' })
+    }
+
+    const {
+      listing = null,
+      summary = null,
+      restaurantId = '',
+      restaurantName = '',
+      reason = 'restaurant_removed_listing',
+    } = req.body || {}
+
+    const outsystemsResponse = await deleteListingInOutSystems(listingId)
+
+    let deletedListing = null
+    let archiveWarning = null
+
+    try {
+      deletedListing = await archiveDeletedListing({
+        listingId,
+        listingSnapshot: listing,
+        deleteSummary: summary,
+        deletedByRestaurantId: restaurantId,
+        deletedByRestaurantName: restaurantName,
+        reason,
+      })
+    } catch (archiveError) {
+      archiveWarning = archiveError.message || 'Failed to archive deleted listing'
+      console.warn('[inventory] Listing deleted, but archive write failed:', archiveWarning)
+    }
+
+    return res.json({
+      success: true,
+      message: 'Deleted successfully',
+      listingId,
+      deletedListing,
+      archiveStored: Boolean(deletedListing),
+      archiveWarning,
+      outsystemsResponse,
+    })
+  } catch (err) {
+    return res.status(err.status || 500).json({
+      error: err.message,
+      details: err.data || null,
+    })
+  }
+})
 
 // Get listings by item name
 app.get('/inventory/search/item', async (req, res) => {

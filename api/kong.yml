@@ -117,6 +117,18 @@ services:
           - /composite/upload-listing
         strip_path: true
 
+  - name: composite-delete-listing
+    url: http://host.docker.internal:4005
+    routes:
+      - name: composite-delete-listing-route
+        paths:
+          - /delete-listing
+        strip_path: false
+      - name: composite-delete-listing-prefixed-route
+        paths:
+          - /composite/delete-listing
+        strip_path: true
+
   - name: composite-remove-expired
     url: http://host.docker.internal:4003
     routes:

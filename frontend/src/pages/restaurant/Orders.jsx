@@ -76,7 +76,7 @@ function formatDateTime(value, createdAt) {
 function normalizeStatus(value, fallback = 'new') {
   const raw = String(value || fallback).trim().toLowerCase();
   if (raw === 'preparing') return 'ready';
-  if (['new', 'ready', 'completed'].includes(raw)) return raw;
+  if (['new', 'ready', 'completed', 'refunded'].includes(raw)) return raw;
   return fallback;
 }
 
@@ -88,7 +88,7 @@ export default function RestaurantOrders() {
 
   const [statusTab, setStatusTab] = useState('new');
   const [orders, setOrders] = useState([]);
-  const [counts, setCounts] = useState({ new: 0, ready: 0, completed: 0, all: 0 });
+  const [counts, setCounts] = useState({ new: 0, ready: 0, completed: 0, refunded: 0, all: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatingKey, setUpdatingKey] = useState('');
@@ -127,6 +127,7 @@ export default function RestaurantOrders() {
             new: Number(data?.counts?.new || 0),
             ready: Number(data?.counts?.ready || 0),
             completed: Number(data?.counts?.completed || 0),
+            refunded: Number(data?.counts?.refunded || 0),
             all: Number(data?.counts?.all || 0),
           });
         }
@@ -234,11 +235,12 @@ export default function RestaurantOrders() {
               a generic admin table.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
             {[
               { label: 'New', value: counts.new },
               { label: 'Ready', value: counts.ready },
               { label: 'Completed', value: counts.completed },
+              { label: 'Refunded', value: counts.refunded },
             ].map((card) => (
               <div
                 key={card.label}
@@ -259,6 +261,7 @@ export default function RestaurantOrders() {
           { key: 'new', label: 'New', count: counts.new },
           { key: 'ready', label: 'Ready', count: counts.ready },
           { key: 'completed', label: 'Completed', count: counts.completed },
+          { key: 'refunded', label: 'Refunded', count: counts.refunded },
         ].map((tab) => (
           <button
             key={tab.key}
@@ -359,6 +362,8 @@ export default function RestaurantOrders() {
                               ? 'bg-emerald-100 text-emerald-700'
                               : itemStatus === 'ready'
                                 ? 'bg-blue-100 text-blue-700'
+                                : itemStatus === 'refunded'
+                                  ? 'bg-rose-100 text-rose-700'
                                 : 'bg-yellow-100 text-yellow-800'
                           }`}
                         >
@@ -378,7 +383,7 @@ export default function RestaurantOrders() {
                               {isUpdating ? 'Updating...' : 'Mark Ready'}
                             </Button>
                           )}
-                          {itemStatus !== 'completed' && (
+                          {!['completed', 'refunded'].includes(itemStatus) && (
                             <Button
                               type="button"
                               size="sm"

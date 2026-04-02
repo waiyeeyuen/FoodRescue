@@ -140,7 +140,11 @@ function normalizeOrderItemStatus(value, fallback = 'new') {
     return 'completed';
   }
 
-  if (['cancelled', 'canceled', 'expired', 'refunded', 'failed', 'missed', 'uncollected'].includes(normalized)) {
+  if (['refunded', 'partially_refunded'].includes(normalized)) {
+    return 'refunded';
+  }
+
+  if (['cancelled', 'canceled', 'expired', 'failed', 'missed', 'uncollected'].includes(normalized)) {
     return 'uncollected';
   }
 
@@ -162,6 +166,10 @@ function getOrderBucket(row) {
 
   if (normalized === 'uncollected') {
     return 'uncollected';
+  }
+
+  if (normalized === 'refunded') {
+    return 'refunded';
   }
 
   if (pickupPassed) {
@@ -202,6 +210,13 @@ function getStatusBadge(row) {
     };
   }
 
+  if (bucket === 'refunded') {
+    return {
+      label: 'Refunded',
+      className: 'bg-rose-100 text-rose-700',
+    };
+  }
+
   return {
     label: row.status || 'Active',
     className: 'bg-slate-100 text-slate-600',
@@ -218,7 +233,7 @@ function buildRowKey({ orderId, itemId, itemName, pickupTime, index = 0 }) {
 }
 
 function isPastOrder(row) {
-  return ['completed', 'uncollected'].includes(getOrderBucket(row));
+  return ['completed', 'uncollected', 'refunded'].includes(getOrderBucket(row));
 }
 
 function flattenRemoteOrders(orderList) {
@@ -377,6 +392,7 @@ export default function UserOrders() {
     let ready = 0;
     let completed = 0;
     let uncollected = 0;
+    let refunded = 0;
 
     for (const row of mergedRows) {
       const bucket = getOrderBucket(row);
@@ -384,9 +400,10 @@ export default function UserOrders() {
       else if (bucket === 'ready') ready += 1;
       else if (bucket === 'completed') completed += 1;
       else if (bucket === 'uncollected') uncollected += 1;
+      else if (bucket === 'refunded') refunded += 1;
     }
 
-    return { confirmed, ready, completed, uncollected };
+    return { confirmed, ready, completed, uncollected, refunded };
   }, [mergedRows]);
 
   const visibleRows = useMemo(() => {
@@ -449,6 +466,7 @@ export default function UserOrders() {
           { key: 'confirmed', label: 'Confirmed', count: counts.confirmed },
           { key: 'ready', label: 'Ready', count: counts.ready },
           { key: 'completed', label: 'Completed', count: counts.completed },
+          { key: 'refunded', label: 'Refunded', count: counts.refunded },
           { key: 'uncollected', label: 'Uncollected', count: counts.uncollected },
         ].map((tab) => (
           <button

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { db } from "../firebase/firebaseAdmin.js";
 
 const app = express();
 const PORT = process.env.PORT || 3005;
@@ -7,6 +8,7 @@ const BASE_URL =
   "https://personal-zxyqgjgl.outsystemscloud.com/FoodRescueRewardsSystem/rest/RewardAPI";
 const STAMP_TARGET = 5;
 const DISCOUNT_PERCENT = 20;
+const RESTORED_REWARDS = db.collection("reward_restorations");
 
 app.use(
   cors({
@@ -103,6 +105,33 @@ function buildFallbackEligibility(userId, stampsCount) {
   };
 }
 
+function toSerializableDate(value) {
+  if (!value) return null;
+  if (typeof value?.toDate === "function") {
+    return value.toDate().toISOString();
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toISOString();
+}
+
+async function getActiveRestoredReward(userId) {
+  const snapshot = await RESTORED_REWARDS.where("userId", "==", userId).get();
+
+  const matches = snapshot.docs
+    .map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: toSerializableDate(doc.data()?.createdAt) || doc.data()?.createdAt || null,
+      usedAt: toSerializableDate(doc.data()?.usedAt) || doc.data()?.usedAt || null,
+      restoredAt: toSerializableDate(doc.data()?.restoredAt) || doc.data()?.restoredAt || null,
+    }))
+    .filter((entry) => String(entry.status || "active") === "active")
+    .sort((a, b) => new Date(a.createdAt || a.restoredAt || 0).getTime() - new Date(b.createdAt || b.restoredAt || 0).getTime());
+
+  return matches[0] || null;
+}
+
 async function fetchRewardEligibility(userId) {
   const response = await fetch(`${BASE_URL}/eligibility?UserId=${encodeURIComponent(userId)}`);
   const rawText = await response.text();
@@ -125,6 +154,23 @@ app.get("/reward/eligibility/:userId", async (req, res) => {
   const fallback = buildFallbackEligibility(userId, stampsCount);
 
   try {
+    const restoredReward = await getActiveRestoredReward(userId);
+    if (restoredReward) {
+      return res.status(200).json({
+        ...fallback,
+        eligible: true,
+        active: true,
+        ordersLeft: 0,
+        discountPercent: Number(restoredReward.discountPercent || DISCOUNT_PERCENT),
+        voucherId: String(restoredReward.voucherId || ""),
+        restoreKey: restoredReward.id,
+        source: "restored-voucher",
+        raw: {
+          restoredReward,
+        },
+      });
+    }
+
     const { response, data } = await fetchRewardEligibility(userId);
     const parsed = parseEligibilityPayload(data);
 
@@ -164,8 +210,43 @@ app.get("/reward/eligibility/:userId", async (req, res) => {
 });
 
 app.post("/reward/update", async (req, res) => {
-  const { userId, voucherId } = req.body;
+  const { userId, voucherId, source, restoreKey } = req.body;
   try {
+    const normalizedSource = String(source || "").trim().toLowerCase();
+    const restoredVoucherSource =
+      normalizedSource === "restored-voucher" ||
+      normalizedSource === "refund-restored-voucher" ||
+      String(voucherId || "").startsWith("restored_") ||
+      Boolean(restoreKey);
+
+    if (restoredVoucherSource) {
+      let targetDocId = String(restoreKey || "").trim();
+
+      if (!targetDocId && userId) {
+        const restoredReward = await getActiveRestoredReward(userId);
+        targetDocId = String(restoredReward?.id || "");
+      }
+
+      if (!targetDocId) {
+        return res.status(404).json({ error: "Restored voucher not found" });
+      }
+
+      await RESTORED_REWARDS.doc(targetDocId).set(
+        {
+          status: "used",
+          usedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+
+      return res.status(200).json({
+        success: true,
+        source: "restored-voucher",
+        voucherId,
+        restoreKey: targetDocId,
+      });
+    }
+
     const response = await fetch(`${BASE_URL}/UpdateStatus`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -176,6 +257,55 @@ app.post("/reward/update", async (req, res) => {
     res.status(response.status).json(data);
   } catch (error) {
     res.status(500).json({ error: error.message || "Failed to update reward status" });
+  }
+});
+
+app.post("/reward/restore", async (req, res) => {
+  const {
+    userId,
+    voucherId = "",
+    restoreKey = "",
+    sourceOrderIds = [],
+    sourcePaymentIds = [],
+    reason = "refund_restored_voucher",
+    listingId = "",
+    discountPercent = DISCOUNT_PERCENT,
+  } = req.body || {};
+
+  if (!userId) {
+    return res.status(400).json({ error: "userId is required" });
+  }
+
+  try {
+    const docId =
+      String(restoreKey || "").trim() ||
+      `restored_${String(userId).trim()}_${Date.now()}`;
+    const restoredVoucherId =
+      String(voucherId || "").trim() || `restored_${String(userId).trim()}`;
+
+    const payload = {
+      userId: String(userId).trim(),
+      voucherId: restoredVoucherId,
+      discountPercent: Number(discountPercent || DISCOUNT_PERCENT) || DISCOUNT_PERCENT,
+      status: "active",
+      restoreReason: String(reason || "refund_restored_voucher"),
+      listingId: String(listingId || ""),
+      sourceOrderIds: Array.isArray(sourceOrderIds) ? sourceOrderIds : [],
+      sourcePaymentIds: Array.isArray(sourcePaymentIds) ? sourcePaymentIds : [],
+      restoredAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+
+    await RESTORED_REWARDS.doc(docId).set(payload, { merge: true });
+
+    return res.status(201).json({
+      success: true,
+      restoreKey: docId,
+      voucherId: restoredVoucherId,
+      source: "restored-voucher",
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to restore reward voucher" });
   }
 });
 

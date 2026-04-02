@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { admin } from "../services/firebaseService.js";
 import {
-  createPayment, getAllPaymentsFromDb, getPaymentByIdFromDb,
+  createPayment, getAllPaymentsFromDb, getPaymentByIdFromDb, getPaymentByOrderIdFromDb,
   updatePayment, createOrUpdatePayment
 } from "../services/paymentRepository.js";
 import { createStripeCheckoutSession, createStripeRefund, stripe } from "../services/stripeService.js";
@@ -78,6 +78,16 @@ export async function getAllPayments(req, res) {
 export async function getPaymentById(req, res) {
   try {
     const payment = await getPaymentByIdFromDb(req.params.paymentId);
+    if (!payment) return res.status(404).json({ error: "Payment not found" });
+    res.json(payment);
+  } catch {
+    res.status(500).json({ error: "Failed to fetch payment" });
+  }
+}
+
+export async function getPaymentByOrderId(req, res) {
+  try {
+    const payment = await getPaymentByOrderIdFromDb(req.params.orderId);
     if (!payment) return res.status(404).json({ error: "Payment not found" });
     res.json(payment);
   } catch {

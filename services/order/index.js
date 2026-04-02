@@ -62,6 +62,14 @@ function toMajorUnits(value) {
   return numeric
 }
 
+function toMinorUnits(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  if (!Number.isInteger(numeric)) return Math.round(numeric * 100)
+  if (numeric <= 100) return numeric * 100
+  return numeric
+}
+
 function getItemField(item, ...keys) {
   for (const key of keys) {
     if (item && item[key] !== undefined && item[key] !== null) return item[key];
@@ -71,11 +79,43 @@ function getItemField(item, ...keys) {
 
 function normalizeItemStatus(value, fallback = 'new') {
   const normalized = String(value || fallback).trim().toLowerCase();
-  if (['new', 'ready', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded'].includes(normalized)) {
+  if (['new', 'pending', 'ready', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded'].includes(normalized)) {
     if (normalized === 'preparing') return 'ready'
     return normalized === 'canceled' ? 'cancelled' : normalized;
   }
   return fallback;
+}
+
+function isRefundedLikeStatus(value) {
+  const normalized = normalizeItemStatus(value, 'new')
+  return normalized === 'refunded' || normalized === 'cancelled'
+}
+
+function deriveOrderStatusFromItems(items, currentStatus = 'confirmed') {
+  const safeItems = Array.isArray(items) ? items : []
+  if (safeItems.length === 0) return currentStatus || 'confirmed'
+
+  const statuses = safeItems.map((item) =>
+    normalizeItemStatus(getItemField(item, 'fulfillmentStatus', 'FulfillmentStatus'), 'new')
+  )
+
+  if (statuses.every((status) => status === 'completed')) {
+    return 'completed'
+  }
+
+  if (statuses.every((status) => isRefundedLikeStatus(status))) {
+    return 'refunded'
+  }
+
+  if (statuses.some((status) => isRefundedLikeStatus(status))) {
+    return 'partially_refunded'
+  }
+
+  if (currentStatus === 'pending_payment') {
+    return 'confirmed'
+  }
+
+  return currentStatus || 'confirmed'
 }
 
 function normalizeStoredItem(item, orderStatus = 'pending_payment') {
@@ -420,6 +460,104 @@ app.get('/orders/restaurant/:restaurantId', async (req, res) => {
   }
 });
 
+// GET REFUNDABLE ORDER ITEMS FOR A LISTING
+app.get('/orders/listings/:listingId/affected', async (req, res) => {
+  try {
+    const { listingId } = req.params
+    const { restaurantId = '', restaurantName = '', includeCompleted = 'false' } = req.query
+    const includeCompletedItems = String(includeCompleted).trim().toLowerCase() === 'true'
+    const normalizedListingId = String(listingId || '').trim()
+
+    if (!normalizedListingId) {
+      return res.status(400).json({ error: 'listingId is required' })
+    }
+
+    const snapshot = await ORDERS.get()
+    const grouped = new Map()
+
+    snapshot.docs.forEach((doc) => {
+      const data = doc.data() || {}
+      const items = Array.isArray(data.items) ? data.items : []
+      const orderId = String(data.orderId || doc.id || '')
+      const customerId = String(data.customerId || '')
+      const currency = String(data.currency || 'sgd')
+      const createdAt = toSerializableDate(data.createdAt)
+      const orderStatus = String(data.status || 'confirmed')
+
+      items.forEach((item) => {
+        const currentItemId = String(getItemField(item, 'itemId', 'listingId', 'id', 'Id') || '')
+        const sameListing = currentItemId === normalizedListingId
+        const sameRestaurant = matchesRestaurantItem(item, restaurantId, restaurantName)
+        const itemStatus = normalizeItemStatus(
+          getItemField(item, 'fulfillmentStatus', 'FulfillmentStatus'),
+          orderStatus === 'confirmed' ? 'new' : 'pending'
+        )
+
+        if (!sameListing) return
+        if ((restaurantId || restaurantName) && !sameRestaurant) return
+        if (!includeCompletedItems && itemStatus === 'completed') return
+        if (isRefundedLikeStatus(itemStatus)) return
+
+        const quantity = Math.max(1, Math.floor(toPositiveNumber(item?.quantity, 1)))
+        const unitAmountMinor = toMinorUnits(
+          getItemField(item, 'unitAmount', 'unitAmountMinor', 'price', 'Price')
+        )
+        const refundAmountMinor = Math.max(0, unitAmountMinor * quantity)
+
+        if (!grouped.has(orderId)) {
+          grouped.set(orderId, {
+            orderId,
+            customerId,
+            currency,
+            orderStatus,
+            createdAt: createdAt?.toISOString?.() || null,
+            totalRefundAmountMinor: 0,
+            totalRefundAmount: 0,
+            items: [],
+          })
+        }
+
+        const entry = grouped.get(orderId)
+        entry.items.push({
+          itemId: currentItemId,
+          itemName: String(getItemField(item, 'name', 'itemName', 'ItemName', 'title') || 'Item'),
+          quantity,
+          unitAmountMinor,
+          unitAmount: Number((unitAmountMinor / 100).toFixed(2)),
+          refundAmountMinor,
+          refundAmount: Number((refundAmountMinor / 100).toFixed(2)),
+          status: itemStatus,
+          pickupTime: String(getItemField(item, 'pickupTime', 'PickupTime') || ''),
+          restaurantId: String(getItemField(item, 'restaurantId', 'RestaurantId') || ''),
+          restaurantName: String(getItemField(item, 'restaurantName', 'RestaurantName') || ''),
+        })
+        entry.totalRefundAmountMinor += refundAmountMinor
+        entry.totalRefundAmount = Number((entry.totalRefundAmountMinor / 100).toFixed(2))
+      })
+    })
+
+    const orders = Array.from(grouped.values()).sort(
+      (a, b) => toDateMs(b.createdAt) - toDateMs(a.createdAt)
+    )
+
+    const totalRefundAmountMinor = orders.reduce(
+      (sum, order) => sum + Number(order.totalRefundAmountMinor || 0),
+      0
+    )
+
+    res.json({
+      success: true,
+      listingId: normalizedListingId,
+      total: orders.length,
+      totalRefundAmountMinor,
+      totalRefundAmount: Number((totalRefundAmountMinor / 100).toFixed(2)),
+      orders,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // UPDATE ORDER STATUS
 app.patch('/orders/:orderId/status', async (req, res) => {
   try {
@@ -457,7 +595,14 @@ app.patch('/orders/:orderId/status', async (req, res) => {
 app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
   try {
     const { orderId, itemId } = req.params;
-    const { status, restaurantId = '', restaurantName = '' } = req.body || {};
+    const {
+      status,
+      restaurantId = '',
+      restaurantName = '',
+      reason = '',
+      refundAmount = 0,
+      paymentId = '',
+    } = req.body || {};
 
     if (!status) {
       return res.status(400).json({ error: 'status is required' });
@@ -472,6 +617,7 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
 
     const data = doc.data() || {};
     const items = Array.isArray(data.items) ? data.items : [];
+    const now = new Date();
     let updated = false;
     let previousMatchedItem = null;
     let nextMatchedItem = null;
@@ -489,8 +635,16 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
       previousMatchedItem = item;
       nextMatchedItem = {
         ...item,
-        fulfillmentStatus: nextStatus
+        fulfillmentStatus: nextStatus,
       };
+
+      if (nextStatus === 'refunded') {
+        nextMatchedItem.refundReason = String(reason || '')
+        nextMatchedItem.refundAmount = Number(refundAmount || 0) || 0
+        nextMatchedItem.refundPaymentId = String(paymentId || '')
+        nextMatchedItem.refundedAt = now
+      }
+
       return nextMatchedItem;
     });
 
@@ -498,10 +652,10 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
       return res.status(404).json({ error: 'Order item not found for restaurant' });
     }
 
-    const now = new Date();
-    const nextOrderStatus = isOrderCompleted(nextItems)
-      ? 'completed'
-      : (data.status === 'pending_payment' ? 'confirmed' : data.status || 'confirmed');
+    const nextOrderStatus = deriveOrderStatusFromItems(
+      nextItems,
+      data.status === 'pending_payment' ? 'confirmed' : data.status || 'confirmed'
+    );
 
     await ORDERS.doc(orderId).update({
       items: nextItems,
@@ -510,7 +664,10 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
       events: [...(data.events || []), {
         type: 'item_status_updated',
         timestamp: now,
-        details: `Item ${itemId} status changed to ${nextStatus}`
+        details:
+          nextStatus === 'refunded' && reason
+            ? `Item ${itemId} status changed to refunded (${reason})`
+            : `Item ${itemId} status changed to ${nextStatus}`
       }]
     });
 

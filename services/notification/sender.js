@@ -24,7 +24,7 @@ function normalizePhone(value) {
 }
 
 export async function sendNotification(notificationData) {
-  const { userId, title, message, channel, userPhone } = notificationData;
+  const { userId, title, message, smsBody, channel, userPhone } = notificationData;
   
   try {
     switch (channel) {
@@ -39,8 +39,9 @@ export async function sendNotification(notificationData) {
         if (!to) {
           throw new Error('Missing destination phone number');
         }
+        const body = String(smsBody || '').trim() || `${title}\n\n${message}`;
         const smsResult = await twilioClient.messages.create({
-          body: `${title}\n\n${message}`,
+          body,
           from: process.env.TWILIO_PHONE_NUMBER,
           to
         });

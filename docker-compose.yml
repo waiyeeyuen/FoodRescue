@@ -112,6 +112,8 @@ services:
       - "3005:3005"
     environment:
       PORT: 3005
+    volumes:
+      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
 
   place-order:
     build:
@@ -187,6 +189,21 @@ services:
       INVENTORY_SERVICE_URL: http://inventory:3000
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
 
+  delete-listing:
+    build:
+      context: .
+      dockerfile: composite/delete-listing/Dockerfile
+    ports:
+      - "4005:4005"
+    environment:
+      PORT: 4005
+      INVENTORY_SERVICE_URL: http://inventory:3000
+      ORDER_SERVICE_URL: http://order:3004
+      PAYMENT_SERVICE_URL: http://payment:3003
+      NOTIFICATION_SERVICE_URL: http://notification:3006
+      REWARD_SERVICE_URL: http://reward:3005
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+
   remove-expired:
     build:
       context: .
@@ -230,6 +247,7 @@ services:
       VITE_PLACE_ORDER_SERVICE_URL: http://localhost:8000
       VITE_RECOMMENDATION_SERVICE_URL: http://localhost:8000
       VITE_ORDER_SERVICE_URL: http://localhost:8000
+      VITE_DELETE_LISTING_SERVICE_URL: http://localhost:8000
       VITE_S3_BUCKET: foodrescue-listing-292659698564-ap-southeast-1-an
       VITE_AWS_REGION: ap-southeast-1
     depends_on:

@@ -106,6 +106,14 @@ services:
           - /listings
         strip_path: false
 
+  - name: composite-delete-listing
+    url: http://delete-listing:4005
+    routes:
+      - name: composite-delete-listing-route
+        paths:
+          - /delete-listing
+        strip_path: false
+
   - name: composite-remove-expired
     url: http://remove-expired:4003
     routes:

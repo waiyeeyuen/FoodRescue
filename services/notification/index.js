@@ -195,7 +195,19 @@ app.patch('/notifications/:user_id/read-all', async (req, res) => {
 
 // Step 11 — called by Place Order (fire-and-forget)
 app.post('/notifications/send', async (req, res) => {
-  const { userId, type, orderId, insufficientItems, userPhone, phone } = req.body || {};
+  const {
+    userId,
+    type,
+    orderId,
+    listingId,
+    insufficientItems,
+    userPhone,
+    phone,
+    title,
+    message,
+    channel,
+    smsBody,
+  } = req.body || {};
 
   try {
     const userDoc = await db.collection('users').doc(userId).get();
@@ -215,21 +227,23 @@ app.post('/notifications/send', async (req, res) => {
     }));
 
     const normalizedType = (type || '').toUpperCase();
-    const channel = getChannel(normalizedType);
+    const resolvedChannel = channel || getChannel(normalizedType);
 
     const notificationData = {
       userId,
       type: normalizedType,
-      title: getTitle(normalizedType),
-      message: getMessage(normalizedType),
-      channel,
+      title: title || getTitle(normalizedType),
+      message: message || getMessage(normalizedType),
+      smsBody: smsBody || '',
+      channel: resolvedChannel,
       userPhone: resolvedPhone,
       status: 'PENDING',
       read: false,
       orderId: orderId || null,
+      listingId: listingId || null,
     };
 
-    if (channel === 'SMS' && !resolvedPhone) {
+    if (resolvedChannel === 'SMS' && !resolvedPhone) {
       console.warn(
         `[notifications/send] ⚠️ Missing destination phone for ${normalizedType}; storing in-app record only`
       );
@@ -252,7 +266,12 @@ app.post('/notifications/send', async (req, res) => {
       createdAt: new Date().toISOString(),
     });
 
-    res.json({ success: true });
+    res.json({
+      success: status === 'SENT' || status === 'STORED',
+      status,
+      channel: resolvedChannel,
+      notificationId: docRef.id,
+    });
   } catch (err) {
     console.error('[notifications/send] ❌ Error:', err.message);
     res.status(500).json({ success: false, error: err.message });

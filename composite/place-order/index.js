@@ -146,6 +146,7 @@ function normalizeRewardStatus(payload, stampsCount) {
     stampTarget: Number(payload?.stampTarget ?? payload?.StampTarget ?? REWARD_STAMP_TARGET) || REWARD_STAMP_TARGET,
     discountPercent: Number.isFinite(discountPercent) ? discountPercent : 0,
     voucherId: String(payload?.voucherId ?? payload?.VoucherId ?? ""),
+    restoreKey: String(payload?.restoreKey ?? payload?.RestoreKey ?? ""),
     source: payload?.source || payload?.Source || "unknown",
     raw: payload,
   };
@@ -166,6 +167,8 @@ async function markRewardUsedIfNeeded(paymentId, orderId) {
       body: JSON.stringify({
         userId: payment?.userId,
         voucherId: reward?.voucherId || "",
+        restoreKey: reward?.restoreKey || "",
+        source: reward?.source || "",
       }),
     });
 

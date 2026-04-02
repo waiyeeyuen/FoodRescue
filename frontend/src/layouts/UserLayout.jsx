@@ -24,6 +24,10 @@ function UserLayout() {
     { label: 'Leaderboard', path: '/leaderboard' },
   ];
 
+  function isVisibleNotification(notification) {
+    return String(notification?.status || '').trim().toUpperCase() === 'SENT';
+  }
+
   const isActive = (path) => location.pathname === path;
   const unreadCount = useMemo(
     () => notifications.filter((notification) => notification?.read !== true).length,
@@ -46,7 +50,11 @@ function UserLayout() {
           throw new Error(data?.error || 'Failed to load notifications');
         }
 
-        setNotifications(Array.isArray(data) ? data : []);
+        const visibleNotifications = Array.isArray(data)
+          ? data.filter((notification) => isVisibleNotification(notification))
+          : [];
+
+        setNotifications(visibleNotifications);
         setNotificationsError('');
       } catch (error) {
         setNotificationsError(error?.message || 'Failed to load notifications');

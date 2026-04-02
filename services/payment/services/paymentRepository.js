@@ -17,6 +17,27 @@ export async function getPaymentByIdFromDb(paymentId) {
   return doc.data();
 }
 
+export async function getPaymentByOrderIdFromDb(orderId) {
+  const snapshot = await db
+    .collection(COLLECTION_NAME)
+    .where("orderId", "==", orderId)
+    .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const matches = snapshot.docs
+    .map((doc) => doc.data())
+    .sort((a, b) => {
+      const aTime = new Date(a?.updatedAt?.toDate?.() || a?.updatedAt || a?.createdAt || 0).getTime();
+      const bTime = new Date(b?.updatedAt?.toDate?.() || b?.updatedAt || b?.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+  return matches[0] || null;
+}
+
 export async function getAllPaymentsFromDb() {
   const snapshot = await db.collection(COLLECTION_NAME).orderBy("createdAt", "desc").get();
   return snapshot.docs.map((doc) => doc.data());
