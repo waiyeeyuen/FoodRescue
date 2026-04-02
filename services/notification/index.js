@@ -2,6 +2,7 @@
 import express from 'express';
 import { connectRabbitMQ } from './rabbitmq.js';
 import { handleEvent, getTitle, getMessage, getChannel } from './handler.js';
+import { resolveNotificationDelivery } from './accountClient.js';
 import { sendNotification } from './sender.js';
 import { db, FieldValue } from '../firebase/firebaseAdmin.js';
 import dotenv from 'dotenv';
@@ -210,24 +211,40 @@ app.post('/notifications/send', async (req, res) => {
   } = req.body || {};
 
   try {
-    const userDoc = await db.collection('users').doc(userId).get();
-    const resolvedPhone =
-      userPhone ||
-      phone ||
-      userDoc.data()?.phone ||
-      process.env.DEFAULT_SMS_TO ||
-      '';
+    const normalizedType = (type || '').toUpperCase();
+    const requestedChannel = channel || getChannel(normalizedType);
+    const resolvedDelivery = await resolveNotificationDelivery({
+      accountId: userId,
+      accountKind: req.body?.accountKind || 'auto',
+      preferredChannel: requestedChannel,
+      userPhone,
+      phone,
+      explicitChannel: Boolean(channel),
+    });
+    const resolvedChannel = resolvedDelivery.channel;
+    const resolvedPhone = resolvedDelivery.userPhone;
 
     console.log('[notifications/send] Incoming:', JSON.stringify({
       userId,
       type,
       orderId,
+      requestedChannel,
+      resolvedChannel,
       hasPhone: Boolean(resolvedPhone),
       hasInsufficientItems: Array.isArray(insufficientItems) && insufficientItems.length > 0
     }));
 
-    const normalizedType = (type || '').toUpperCase();
-    const resolvedChannel = channel || getChannel(normalizedType);
+    if (resolvedDelivery.suppressed) {
+      console.log(
+        `[notifications/send] SMS suppressed for user ${String(userId || '')}: ${resolvedDelivery.preferenceReason}`
+      );
+      return res.json({
+        success: true,
+        status: 'SKIPPED',
+        channel: requestedChannel,
+        reason: resolvedDelivery.preferenceReason,
+      });
+    }
 
     const notificationData = {
       userId,
@@ -241,6 +258,7 @@ app.post('/notifications/send', async (req, res) => {
       read: false,
       orderId: orderId || null,
       listingId: listingId || null,
+      preferenceReason: resolvedDelivery.preferenceReason,
     };
 
     if (resolvedChannel === 'SMS' && !resolvedPhone) {
@@ -267,10 +285,11 @@ app.post('/notifications/send', async (req, res) => {
     });
 
     res.json({
-      success: status === 'SENT' || status === 'STORED',
+      success: status !== 'FAILED',
       status,
       channel: resolvedChannel,
       notificationId: docRef.id,
+      reason: resolvedDelivery.preferenceReason,
     });
   } catch (err) {
     console.error('[notifications/send] ❌ Error:', err.message);

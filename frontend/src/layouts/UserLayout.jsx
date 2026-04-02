@@ -25,7 +25,9 @@ function UserLayout() {
   ];
 
   function isVisibleNotification(notification) {
-    return String(notification?.status || '').trim().toUpperCase() === 'SENT';
+    return ['SENT', 'STORED'].includes(
+      String(notification?.status || '').trim().toUpperCase()
+    );
   }
 
   const isActive = (path) => location.pathname === path;

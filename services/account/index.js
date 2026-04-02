@@ -8,7 +8,7 @@ const app = express()
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"]
 };
 app.use(cors(corsOptions))
@@ -18,6 +18,9 @@ const USERS = db.collection('users')
 const RESTAURANTS = db.collection('restaurants')
 const JWT_SECRET = process.env.JWT_SECRET || 'foodrescue-secret' // Use env variable in production
 const ACCOUNT_CACHE_TTL_MS = 60 * 1000
+const IMPACT_CO2_PER_MEAL = 1.1
+const IMPACT_WATER_PER_MEAL = 81
+const IMPACT_TIMEZONE = 'Asia/Singapore'
 const accountCache = new Map()
 const leaderboardCache = new Map()
 
@@ -47,6 +50,43 @@ function createDefaultRestaurantImpact() {
     lastSuccessfulOrderAt: null,
     leaderboardEligible: true
   };
+}
+
+function createDefaultNotificationPreferences() {
+  return {
+    inAppEnabled: true,
+    smsEnabled: false,
+  }
+}
+
+function normalizeNotificationPreferences(preferences) {
+  const safePreferences =
+    preferences && typeof preferences === 'object' ? preferences : {}
+  const defaults = createDefaultNotificationPreferences()
+
+  return {
+    inAppEnabled: true,
+    smsEnabled:
+      safePreferences.smsEnabled === undefined
+        ? defaults.smsEnabled
+        : Boolean(safePreferences.smsEnabled),
+  }
+}
+
+function normalizeStoredPhone(value) {
+  if (!value) return ''
+  const raw = String(value).trim()
+  if (!raw) return ''
+
+  const hasPlus = raw.startsWith('+')
+  const digits = raw.replace(/[^\d]/g, '')
+  return hasPlus ? `+${digits}` : digits
+}
+
+function isValidStoredPhone(value) {
+  const normalized = normalizeStoredPhone(value)
+  const digits = normalized.replace(/[^\d]/g, '')
+  return digits.length >= 8 && digits.length <= 15
 }
 
 function normalizeImpact(impact, defaultsFactory) {
@@ -117,6 +157,10 @@ function setCachedAccount(cacheKey, value) {
   })
 }
 
+function invalidateCachedAccount(cacheKey) {
+  accountCache.delete(String(cacheKey || ''))
+}
+
 function getCachedLeaderboard(cacheKey) {
   const cached = leaderboardCache.get(String(cacheKey || ''))
   if (!cached) return null
@@ -132,6 +176,10 @@ function setCachedLeaderboard(cacheKey, value) {
     value,
     expiresAt: Date.now() + ACCOUNT_CACHE_TTL_MS,
   })
+}
+
+function clearLeaderboardCache() {
+  leaderboardCache.clear()
 }
 
 async function ensureLegacyImpactFields(docRef, safeData, impact) {
@@ -153,6 +201,7 @@ async function ensureLegacyImpactFields(docRef, safeData, impact) {
 function sanitizeAccountDocument(doc, defaultsFactory) {
   const data = doc.data() || {};
   const { password, ...safeData } = data;
+  const notificationPreferences = normalizeNotificationPreferences(safeData.notificationPreferences)
   const impact = normalizeImpact(
     {
       ...(safeData.impact && typeof safeData.impact === 'object' ? safeData.impact : {}),
@@ -180,6 +229,8 @@ function sanitizeAccountDocument(doc, defaultsFactory) {
     updatedAt: toIsoDate(safeData.updatedAt),
     ...legacyImpactFields,
     city: typeof safeData.city === 'string' ? safeData.city : '',
+    phone: normalizeStoredPhone(safeData.phone),
+    notificationPreferences,
     impact: {
       ...impact,
       lastSuccessfulOrderAt: toIsoDate(impact.lastSuccessfulOrderAt),
@@ -190,6 +241,160 @@ function sanitizeAccountDocument(doc, defaultsFactory) {
 function sanitizeLeaderboardValue(value) {
   const numeric = Number(value ?? 0);
   return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function toPositiveImpactValue(value, fallback = 0) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback
+}
+
+function getSingaporeDayKey(value) {
+  const parsed = value ? new Date(value) : new Date()
+  if (Number.isNaN(parsed.getTime())) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: IMPACT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date())
+  }
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: IMPACT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(parsed)
+}
+
+function normalizeInternalContactKind(value) {
+  const normalized = String(value || 'auto').trim().toLowerCase()
+  if (['user', 'restaurant', 'auto'].includes(normalized)) return normalized
+  return 'auto'
+}
+
+async function resolveInternalContact(id, kind = 'auto') {
+  const normalizedId = String(id || '').trim()
+  const normalizedKind = normalizeInternalContactKind(kind)
+
+  if (!normalizedId) {
+    return {
+      found: false,
+      id: '',
+      kind: 'unknown',
+      phone: '',
+      notificationPreferences: createDefaultNotificationPreferences(),
+    }
+  }
+
+  const collections =
+    normalizedKind === 'user'
+      ? [{ kind: 'user', ref: USERS }]
+      : normalizedKind === 'restaurant'
+        ? [{ kind: 'restaurant', ref: RESTAURANTS }]
+        : [
+            { kind: 'user', ref: USERS },
+            { kind: 'restaurant', ref: RESTAURANTS },
+          ]
+
+  for (const entry of collections) {
+    const doc = await entry.ref.doc(normalizedId).get()
+    if (!doc.exists) continue
+
+    const data = doc.data() || {}
+    return {
+      found: true,
+      id: doc.id,
+      kind: entry.kind,
+      phone: normalizeStoredPhone(data.phone),
+      notificationPreferences:
+        entry.kind === 'user'
+          ? normalizeNotificationPreferences(data.notificationPreferences)
+          : createDefaultNotificationPreferences(),
+      email: String(data.email || '').trim(),
+      username: entry.kind === 'user' ? String(data.username || '').trim() : '',
+      restaurantName: entry.kind === 'restaurant' ? String(data.restaurantName || '').trim() : '',
+    }
+  }
+
+  return {
+    found: false,
+    id: normalizedId,
+    kind: normalizedKind === 'auto' ? 'unknown' : normalizedKind,
+    phone: '',
+    notificationPreferences: createDefaultNotificationPreferences(),
+  }
+}
+
+function buildImpactPayload({
+  existingImpact,
+  quantity,
+  completedAtValue,
+  extraImpact = {},
+}) {
+  const existingDayKeys = Array.isArray(existingImpact.completedDayKeys)
+    ? existingImpact.completedDayKeys.map((key) => String(key))
+    : []
+  const completedDayKey = getSingaporeDayKey(completedAtValue?.toISOString?.() || completedAtValue)
+  const nextDayKeys = existingDayKeys.includes(completedDayKey)
+    ? existingDayKeys
+    : [...existingDayKeys, completedDayKey]
+
+  return {
+    ...existingImpact,
+    mealsRescued: toPositiveImpactValue(existingImpact.mealsRescued) + quantity,
+    co2KgSaved:
+      toPositiveImpactValue(existingImpact.co2KgSaved) + (quantity * IMPACT_CO2_PER_MEAL),
+    waterLitersSaved:
+      toPositiveImpactValue(existingImpact.waterLitersSaved) + (quantity * IMPACT_WATER_PER_MEAL),
+    daysSaved: nextDayKeys.length,
+    completedDayKeys: nextDayKeys,
+    lastSuccessfulOrderAt: completedAtValue,
+    leaderboardEligible: true,
+    ...extraImpact,
+  }
+}
+
+async function applyCompletedOrderImpact({
+  docRef,
+  defaultsFactory,
+  quantity,
+  completedAtValue,
+  extraImpact = {},
+}) {
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(docRef)
+    const data = snapshot.exists ? (snapshot.data() || {}) : {}
+    const existingImpact = normalizeImpact(
+      {
+        ...(data.impact && typeof data.impact === 'object' ? data.impact : {}),
+        co2KgSaved: data?.impact?.co2KgSaved ?? data.co2 ?? 0,
+        waterLitersSaved: data?.impact?.waterLitersSaved ?? data.water ?? 0,
+        daysSaved: data?.impact?.daysSaved ?? data.days ?? 0,
+      },
+      defaultsFactory
+    )
+    const resolvedExtraImpact =
+      typeof extraImpact === 'function' ? extraImpact(existingImpact) : extraImpact
+
+    const nextImpact = buildImpactPayload({
+      existingImpact,
+      quantity,
+      completedAtValue,
+      extraImpact: resolvedExtraImpact,
+    })
+
+    transaction.set(
+      docRef,
+      {
+        co2: Number(nextImpact.co2KgSaved || 0) || 0,
+        water: Number(nextImpact.waterLitersSaved || 0) || 0,
+        days: Number(nextImpact.daysSaved || 0) || 0,
+        impact: nextImpact,
+        updatedAt: completedAtValue,
+      },
+      { merge: true }
+    )
+  })
 }
 
 function getMetricValueFromUserDoc(doc, field, impactKey) {
@@ -302,6 +507,8 @@ app.post('/account/register', async (req, res) => {
       password: hashedPassword,
       cart: [],
       city: '',
+      phone: '',
+      notificationPreferences: createDefaultNotificationPreferences(),
       co2: 0,
       water: 0,
       days: 0,
@@ -541,6 +748,143 @@ app.get('/account/restaurant/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.patch('/account/:id/notification-settings', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { smsEnabled, phone } = req.body || {}
+    const docRef = USERS.doc(id)
+    const doc = await docRef.get()
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Not found' })
+    }
+
+    const currentData = doc.data() || {}
+    const currentPreferences = normalizeNotificationPreferences(currentData.notificationPreferences)
+    const requestedSmsEnabled =
+      smsEnabled === undefined ? currentPreferences.smsEnabled : Boolean(smsEnabled)
+    const nextPhone =
+      phone === undefined
+        ? normalizeStoredPhone(currentData.phone)
+        : normalizeStoredPhone(phone)
+
+    if (requestedSmsEnabled && !nextPhone) {
+      return res.status(400).json({ error: 'Phone number is required to enable SMS notifications' })
+    }
+
+    if (nextPhone && !isValidStoredPhone(nextPhone)) {
+      return res.status(400).json({ error: 'Phone number must contain 8 to 15 digits' })
+    }
+
+    const nextPreferences = {
+      inAppEnabled: true,
+      smsEnabled: requestedSmsEnabled,
+    }
+
+    await docRef.set(
+      {
+        phone: nextPhone,
+        notificationPreferences: nextPreferences,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+
+    const updatedDoc = await docRef.get()
+    const sanitized = sanitizeAccountDocument(updatedDoc, createDefaultUserImpact)
+    setCachedAccount(id, sanitized)
+
+    res.json({
+      success: true,
+      account: sanitized,
+      notificationPreferences: sanitized.notificationPreferences,
+      phone: sanitized.phone,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/account/internal/contact/:id', async (req, res) => {
+  try {
+    const contact = await resolveInternalContact(req.params.id, req.query.kind)
+    res.json(contact)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/account/internal/impact/order-completed', async (req, res) => {
+  try {
+    const {
+      customerId = '',
+      restaurantId = '',
+      quantity = 1,
+      moneySaved = 0,
+      paidAmount = 0,
+      completedAt,
+    } = req.body || {}
+
+    const normalizedCustomerId = String(customerId || '').trim()
+    const normalizedRestaurantId = String(restaurantId || '').trim()
+    const normalizedQuantity = Math.max(1, Math.floor(Number(quantity) || 1))
+    const normalizedMoneySaved = Number(moneySaved) || 0
+    const normalizedPaidAmount = Number(paidAmount) || 0
+    const completedAtValue = toDateValue(completedAt) || new Date()
+    const writes = []
+
+    if (normalizedCustomerId) {
+      writes.push(
+        applyCompletedOrderImpact({
+          docRef: USERS.doc(normalizedCustomerId),
+          defaultsFactory: createDefaultUserImpact,
+          quantity: normalizedQuantity,
+          completedAtValue,
+          extraImpact: (existingImpact) => ({
+            moneySaved:
+              toPositiveImpactValue(existingImpact.moneySaved) +
+              toPositiveImpactValue(normalizedMoneySaved),
+          }),
+        })
+      )
+    }
+
+    if (normalizedRestaurantId) {
+      writes.push(
+        applyCompletedOrderImpact({
+          docRef: RESTAURANTS.doc(normalizedRestaurantId),
+          defaultsFactory: createDefaultRestaurantImpact,
+          quantity: normalizedQuantity,
+          completedAtValue,
+          extraImpact: (existingImpact) => ({
+            revenueRecovered:
+              toPositiveImpactValue(existingImpact.revenueRecovered) +
+              toPositiveImpactValue(normalizedPaidAmount),
+            ordersFulfilled:
+              toPositiveImpactValue(existingImpact.ordersFulfilled) + normalizedQuantity,
+          }),
+        })
+      )
+    }
+
+    await Promise.all(writes)
+
+    if (normalizedCustomerId) invalidateCachedAccount(normalizedCustomerId)
+    if (normalizedRestaurantId) invalidateCachedAccount(`restaurant:${normalizedRestaurantId}`)
+    clearLeaderboardCache()
+
+    res.json({
+      success: true,
+      updated: {
+        customer: Boolean(normalizedCustomerId),
+        restaurant: Boolean(normalizedRestaurantId),
+      },
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 function normalizeCartItem(input) {
   const listingId =

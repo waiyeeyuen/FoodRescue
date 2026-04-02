@@ -384,9 +384,9 @@ async function sendChannelNotification({
   });
 
   const status = String(response?.status || "").toUpperCase();
-  const expectedStatus = channel === "SMS" ? "SENT" : "STORED";
+  const acceptedStatuses = channel === "SMS" ? ["SENT", "SKIPPED"] : ["STORED"];
 
-  if (status !== expectedStatus) {
+  if (!acceptedStatuses.includes(status)) {
     const error = new Error(
       `Notification channel ${channel} returned status ${status || "UNKNOWN"}`
     );

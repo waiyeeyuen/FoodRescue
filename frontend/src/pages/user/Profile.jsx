@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FlameIcon } from 'lucide-react';
+import { BellRingIcon, FlameIcon, SmartphoneIcon } from 'lucide-react';
 
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 function normalizeUserImpact(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
@@ -51,6 +59,28 @@ function getImpactCacheKey(userId) {
   return `impact_profile_${String(userId || '')}`;
 }
 
+function normalizeNotificationSettings(profile) {
+  const preferences =
+    profile?.notificationPreferences && typeof profile.notificationPreferences === 'object'
+      ? profile.notificationPreferences
+      : {};
+
+  return {
+    inAppEnabled: true,
+    smsEnabled: Boolean(preferences.smsEnabled),
+    phone: typeof profile?.phone === 'string' ? profile.phone : '',
+  };
+}
+
+function formatPhonePreview(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'No phone number saved yet';
+
+  const digits = raw.replace(/[^\d]/g, '');
+  if (digits.length < 4) return raw;
+  return `${raw.slice(0, Math.max(0, raw.length - 4))}${'*'.repeat(Math.min(4, digits.length))}`;
+}
+
 export default function UserProfile() {
   const { user } = useAuth();
 
@@ -66,6 +96,12 @@ export default function UserProfile() {
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileUnavailable, setProfileUnavailable] = useState(false);
+  const [smsDialogOpen, setSmsDialogOpen] = useState(false);
+  const [smsEnabledDraft, setSmsEnabledDraft] = useState(false);
+  const [phoneDraft, setPhoneDraft] = useState('');
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsSuccess, setSettingsSuccess] = useState('');
 
   const accountServiceUrl =
     import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
@@ -129,6 +165,10 @@ export default function UserProfile() {
   }, [dietary]);
 
   const impact = useMemo(() => normalizeUserImpact(profile?.impact), [profile?.impact]);
+  const notificationSettings = useMemo(
+    () => normalizeNotificationSettings(profile),
+    [profile]
+  );
   const streakData = useMemo(() => {
     const fallbackDayKey = impact.lastSuccessfulOrderAt ? toSingaporeDayKey(impact.lastSuccessfulOrderAt) : '';
     const dayKeys = Array.isArray(impact.completedDayKeys)
@@ -175,6 +215,62 @@ export default function UserProfile() {
     { label: 'Water saved', value: Math.round(impact.waterLitersSaved), suffix: 'L' },
     { label: 'Money saved', value: impact.moneySaved.toFixed(2), suffix: 'SGD' },
   ];
+
+  useEffect(() => {
+    setSmsEnabledDraft(notificationSettings.smsEnabled);
+    setPhoneDraft(notificationSettings.phone);
+  }, [notificationSettings.phone, notificationSettings.smsEnabled]);
+
+  function openSmsDialog() {
+    setSettingsError('');
+    setSettingsSuccess('');
+    setSmsEnabledDraft(notificationSettings.smsEnabled);
+    setPhoneDraft(notificationSettings.phone);
+    setSmsDialogOpen(true);
+  }
+
+  async function handleSaveNotificationSettings(event) {
+    event.preventDefault();
+
+    if (!user?.id) return;
+
+    try {
+      setSettingsSaving(true);
+      setSettingsError('');
+      setSettingsSuccess('');
+
+      const response = await fetch(
+        `${accountServiceUrl}/account/${encodeURIComponent(user.id)}/notification-settings`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            smsEnabled: smsEnabledDraft,
+            phone: phoneDraft,
+          }),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to save notification settings');
+      }
+
+      const nextProfile = data?.account || profile;
+      setProfile(nextProfile);
+      localStorage.setItem(getImpactCacheKey(user.id), JSON.stringify(nextProfile));
+      setSettingsSuccess(
+        smsEnabledDraft
+          ? 'SMS notifications are now active for this number.'
+          : 'SMS notifications are now turned off. Website notifications stay on.'
+      );
+      setSmsDialogOpen(false);
+    } catch (error) {
+      setSettingsError(error?.message || 'Failed to save notification settings');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -305,6 +401,93 @@ export default function UserProfile() {
         </Card>
 
         <div className="grid gap-6 lg:col-span-2">
+          <Card id="notifications">
+            <CardHeader>
+              <CardTitle>SMS Notifications</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+                <div className="rounded-[22px] border border-slate-200 bg-background p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-full bg-slate-100 p-2 text-slate-700">
+                      <SmartphoneIcon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-900">SMS notifications</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        {notificationSettings.smsEnabled
+                          ? `Enabled for ${formatPhonePreview(notificationSettings.phone)}`
+                          : 'Disabled until you opt in with a phone number.'}
+                      </p>
+                      <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        {notificationSettings.smsEnabled ? 'Enabled' : 'Off'}
+                      </p>
+                    </div>
+                </div>
+              </div>
+
+              {settingsSuccess ? (
+                <p className="rounded-[18px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                  {settingsSuccess}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" onClick={openSmsDialog}>
+                  {notificationSettings.smsEnabled ? 'Manage SMS number' : 'Turn on SMS notifications'}
+                </Button>
+                {notificationSettings.smsEnabled ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={settingsSaving}
+                    onClick={async () => {
+                      setSmsEnabledDraft(false);
+                      setPhoneDraft(notificationSettings.phone);
+                      setSettingsError('');
+                      setSettingsSuccess('');
+
+                      try {
+                        setSettingsSaving(true);
+                        const response = await fetch(
+                          `${accountServiceUrl}/account/${encodeURIComponent(user?.id || '')}/notification-settings`,
+                          {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              smsEnabled: false,
+                              phone: notificationSettings.phone,
+                            }),
+                          }
+                        );
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) {
+                          throw new Error(data?.error || 'Failed to turn off SMS notifications');
+                        }
+
+                        const nextProfile = data?.account || profile;
+                        setProfile(nextProfile);
+                        localStorage.setItem(getImpactCacheKey(user.id), JSON.stringify(nextProfile));
+                        setSettingsSuccess('SMS notifications are now turned off. Website notifications stay on.');
+                      } catch (error) {
+                        setSettingsError(error?.message || 'Failed to turn off SMS notifications');
+                      } finally {
+                        setSettingsSaving(false);
+                      }
+                    }}
+                  >
+                    Turn off SMS
+                  </Button>
+                ) : null}
+              </div>
+
+              {settingsError ? (
+                <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {settingsError}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+
           <Card id="payment">
             <CardHeader>
               <CardTitle>Payment Method</CardTitle>
@@ -401,6 +584,77 @@ export default function UserProfile() {
           </Card>
         </div>
       </div>
+
+      <Dialog open={smsDialogOpen} onOpenChange={setSmsDialogOpen}>
+        <DialogContent className="max-w-lg rounded-[26px]">
+          <form onSubmit={handleSaveNotificationSettings}>
+            <DialogHeader className="px-6 pt-6">
+              <DialogTitle>SMS notifications</DialogTitle>
+              <DialogDescription>
+                Turn on SMS only if you want text messages for key updates.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-4 px-6 py-4">
+              <label className="flex items-start gap-3 rounded-[22px] border border-slate-200 bg-slate-50/70 px-4 py-4">
+                <input
+                  type="checkbox"
+                  checked={smsEnabledDraft}
+                  onChange={(event) => setSmsEnabledDraft(event.target.checked)}
+                  className="mt-1"
+                />
+                <span className="flex-1">
+                  <span className="block text-sm font-semibold text-slate-900">
+                    Receive SMS notifications
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-600">
+                    Use the number below for order confirmations, refund updates, and other important rescue events.
+                  </span>
+                </span>
+              </label>
+
+              <div className="grid gap-2">
+                <label htmlFor="sms-phone" className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Phone number
+                </label>
+                <input
+                  id="sms-phone"
+                  type="tel"
+                  inputMode="tel"
+                  placeholder="+65 9123 4567"
+                  value={phoneDraft}
+                  onChange={(event) => setPhoneDraft(event.target.value)}
+                  disabled={!smsEnabledDraft || settingsSaving}
+                  className="h-12 w-full rounded-[18px] border border-input bg-background px-4 text-sm text-slate-900 outline-none ring-0 transition focus:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                />
+                <p className="text-xs text-slate-500">
+                  Save digits with country code if needed. Example: `+6591234567`.
+                </p>
+              </div>
+
+              {settingsError ? (
+                <p className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {settingsError}
+                </p>
+              ) : null}
+            </div>
+
+            <DialogFooter className="rounded-b-[26px]">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={settingsSaving}
+                onClick={() => setSmsDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={settingsSaving}>
+                {settingsSaving ? 'Saving...' : 'Save settings'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

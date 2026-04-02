@@ -1,17 +1,16 @@
 import express from 'express'
 import cors from 'cors'
-import admin, { db } from './firebaseAdmin.js'
+import { db } from './firebaseAdmin.js'
 
 const app = express()
-const USERS = db.collection('users')
-const RESTAURANTS = db.collection('restaurants')
+const ACCOUNT_SERVICE_URL =
+  process.env.ACCOUNT_SERVICE_URL ||
+  process.env.ACCOUNT_URL ||
+  'http://account:3001'
 const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL ||
   process.env.NOTIFICATION_URL ||
   'http://notification:3006'
-const IMPACT_CO2_PER_MEAL = 1.1
-const IMPACT_WATER_PER_MEAL = 81
-const IMPACT_TIMEZONE = 'Asia/Singapore'
 
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
@@ -48,6 +47,40 @@ function toDateMs(value) {
   if (!value) return 0;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+async function readBody(response) {
+  const contentType = response.headers.get('content-type') || ''
+  const raw = await response.text()
+  if (!raw) return null
+
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return raw
+    }
+  }
+
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options)
+  const data = await readBody(response)
+
+  if (!response.ok) {
+    const error = new Error((data && data.error) || `Request failed (${response.status})`)
+    error.status = response.status
+    error.data = data
+    throw error
+  }
+
+  return data
 }
 
 function toPositiveNumber(value, fallback = 0) {
@@ -181,24 +214,6 @@ function isOrderCompleted(items) {
   return safeItems.every((item) => normalizeItemStatus(item?.fulfillmentStatus, 'new') === 'completed');
 }
 
-function getSingaporeDayKey(value) {
-  const parsed = value ? new Date(value) : new Date()
-  if (Number.isNaN(parsed.getTime())) {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: IMPACT_TIMEZONE,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).format(new Date())
-  }
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: IMPACT_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(parsed)
-}
-
 function getEstimatedMoneySaved(item) {
   const quantity = toPositiveNumber(item?.quantity, 1)
   const originalPrice = toMajorUnits(getItemField(item, 'originalPrice', 'OriginalPrice'))
@@ -224,76 +239,25 @@ function fireAndForgetNotification(body) {
 async function applyCompletedPickupImpact({ order, item, completedAt }) {
   const customerId = String(order?.customerId || '')
   const restaurantId = String(getItemField(item, 'restaurantId', 'RestaurantId') || '')
+  if (!customerId && !restaurantId) return
+
   const quantity = Math.max(1, Math.floor(toPositiveNumber(item?.quantity, 1)))
-  const completedDayKey = getSingaporeDayKey(completedAt?.toISOString?.() || completedAt)
   const moneySaved = getEstimatedMoneySaved(item)
   const paidAmount =
     toMajorUnits(getItemField(item, 'unitAmount', 'price', 'Price') ?? 0) * quantity
 
-  const completedAtValue = completedAt || new Date()
-  async function updateImpactDocument(docRef, getExtraImpact = () => ({})) {
-    await db.runTransaction(async (transaction) => {
-      const snapshot = await transaction.get(docRef)
-      const data = snapshot.exists ? (snapshot.data() || {}) : {}
-      const existingImpact = data.impact && typeof data.impact === 'object' ? data.impact : {}
-      const existingDayKeys = Array.isArray(existingImpact.completedDayKeys)
-        ? existingImpact.completedDayKeys.map((key) => String(key))
-        : []
-      const nextDayKeys = existingDayKeys.includes(completedDayKey)
-        ? existingDayKeys
-        : [...existingDayKeys, completedDayKey]
-      const extraImpact = getExtraImpact(existingImpact)
-
-      transaction.set(
-        docRef,
-        {
-          co2:
-            toPositiveNumber(existingImpact.co2KgSaved ?? data.co2) +
-            (quantity * IMPACT_CO2_PER_MEAL),
-          water:
-            toPositiveNumber(existingImpact.waterLitersSaved ?? data.water) +
-            (quantity * IMPACT_WATER_PER_MEAL),
-          days: nextDayKeys.length,
-          impact: {
-            ...existingImpact,
-            mealsRescued: toPositiveNumber(existingImpact.mealsRescued) + quantity,
-            co2KgSaved: toPositiveNumber(existingImpact.co2KgSaved ?? data.co2) + (quantity * IMPACT_CO2_PER_MEAL),
-            waterLitersSaved: toPositiveNumber(existingImpact.waterLitersSaved ?? data.water) + (quantity * IMPACT_WATER_PER_MEAL),
-            daysSaved: nextDayKeys.length,
-            completedDayKeys: nextDayKeys,
-            lastSuccessfulOrderAt: completedAtValue,
-            leaderboardEligible: true,
-            ...extraImpact,
-          },
-          updatedAt: completedAtValue,
-        },
-        { merge: true }
-      )
-    })
-  }
-
-  const writes = []
-
-  if (customerId) {
-    writes.push(
-      updateImpactDocument(USERS.doc(customerId), (existingImpact) => ({
-        moneySaved: toPositiveNumber(existingImpact.moneySaved) + moneySaved,
-      }))
-    )
-  }
-
-  if (restaurantId) {
-    writes.push(
-      updateImpactDocument(RESTAURANTS.doc(restaurantId), (existingImpact) => ({
-        revenueRecovered:
-          toPositiveNumber(existingImpact.revenueRecovered) +
-          (Number.isFinite(paidAmount) ? paidAmount : 0),
-        ordersFulfilled: toPositiveNumber(existingImpact.ordersFulfilled) + quantity,
-      }))
-    )
-  }
-
-  await Promise.all(writes)
+  await fetchJson(`${ACCOUNT_SERVICE_URL}/account/internal/impact/order-completed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customerId,
+      restaurantId,
+      quantity,
+      moneySaved,
+      paidAmount: Number.isFinite(paidAmount) ? paidAmount : 0,
+      completedAt: completedAt?.toISOString?.() || new Date().toISOString(),
+    }),
+  })
 }
 
 // CREATE ORDER

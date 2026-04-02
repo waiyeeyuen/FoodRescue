@@ -1,25 +1,26 @@
 // handler.js
 import { db, FieldValue } from '../firebase/firebaseAdmin.js';
+import { resolveNotificationDelivery } from './accountClient.js';
 
 export async function handleEvent(message) {
   const event = JSON.parse(message.content.toString());
-  
-  // Lookup user
-  const userDoc = await db.collection('users').doc(event.user_id).get();
-  const userData = userDoc.data();
-  const userPhone = userData?.phone || process.env.DEFAULT_SMS_TO || '';
-
   const normalizedType = event.type.replace(/\./g, '_').toUpperCase();
+  const resolvedDelivery = await resolveNotificationDelivery({
+    accountId: event.user_id,
+    accountKind: event.account_kind || 'auto',
+    preferredChannel: getChannel(normalizedType),
+  });
   
   const notificationData = {
     userId: event.user_id,
     type: normalizedType,
     title: getTitle(normalizedType),
     message: getMessage(normalizedType),
-    channel: getChannel(normalizedType),
-    userPhone,
+    channel: resolvedDelivery.channel,
+    userPhone: resolvedDelivery.userPhone,
     status: 'PENDING',
-    read: false
+    read: false,
+    preferenceReason: resolvedDelivery.preferenceReason,
   };
   
   const docRef = await db.collection('notifications').add({
