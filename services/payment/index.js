@@ -2,11 +2,13 @@ import express from "express";
 import cors from "cors";
 import { config } from "./utils/config.js";
 import { paymentRoutes, handleStripeWebhook } from "./routes/paymentRoutes.js";
+import { getChannel } from "./utils/rabbitmq.js";
 
 const app = express();
 
 app.use(cors());
 
+// ✅ Webhook route MUST be before express.json() — raw body needed for signature verification
 app.post(
   "/payments/webhook",
   express.raw({ type: "application/json" }),
@@ -16,9 +18,7 @@ app.post(
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.json({
-    message: "Payment service is running"
-  });
+  res.json({ message: "Payment service is running" });
 });
 
 app.use("/payments", paymentRoutes);
@@ -26,3 +26,9 @@ app.use("/payments", paymentRoutes);
 app.listen(config.port, () => {
   console.log(`Payment service listening on port ${config.port}`);
 });
+
+// Keep a warm RabbitMQ connection so publishes don’t fail silently and
+// you can see the Payment connection in the RabbitMQ UI.
+getChannel()
+  .then(() => console.log("[RabbitMQ] Payment channel ready"))
+  .catch((err) => console.warn("[RabbitMQ] Payment channel not ready:", err?.message || err));

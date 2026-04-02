@@ -1,0 +1,11 @@
+.git
+.gitignore
+
+**/node_modules
+**/dist
+**/.cache
+**/.DS_Store
+
+# Never bake secrets into images
+**/.env
+services/firebase/serviceAccountKey.json

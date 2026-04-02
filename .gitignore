@@ -1,0 +1,46 @@
+# Environment files
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Firebase service account key - never commit this
+**/serviceAccountKey.json
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+.cache/
+.parcel-cache/
+.vite/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc local files
+tmp/
+.tmp/
+.eslintcache
