@@ -158,6 +158,14 @@
     box-shadow: 0 0 0 4px rgba(238, 127, 88, 0.12);
     border-color: rgba(20, 95, 89, 0.4);
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 @layer components {

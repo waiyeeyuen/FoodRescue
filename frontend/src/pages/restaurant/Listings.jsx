@@ -645,7 +645,7 @@ export default function RestaurantListings() {
   return (
     <div className="flex flex-col gap-6">
       <div className="spotlight-panel overflow-hidden rounded-[32px] p-6 sm:p-8">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-end">
+        <div className="flex flex-col gap-6">
           <div>
             <span className="hero-kicker">Listing Studio</span>
             <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
@@ -656,7 +656,8 @@ export default function RestaurantListings() {
               merchant product than a plain dashboard table.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+
+          <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-[24px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                 Active

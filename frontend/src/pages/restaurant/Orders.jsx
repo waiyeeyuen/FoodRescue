@@ -224,7 +224,7 @@ export default function RestaurantOrders() {
   return (
     <div className="flex flex-col gap-6">
       <div className="spotlight-panel overflow-hidden rounded-[32px] p-6 sm:p-8">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-end">
+        <div className="flex flex-col gap-6">
           <div>
             <span className="hero-kicker">Fulfillment Board</span>
             <h1 className="hero-title mt-4 text-4xl text-slate-900 sm:text-5xl">
@@ -235,7 +235,8 @@ export default function RestaurantOrders() {
               a generic admin table.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               { label: 'New', value: counts.new },
               { label: 'Ready', value: counts.ready },

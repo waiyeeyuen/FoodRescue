@@ -503,9 +503,6 @@ export default function UserOrders() {
             className="w-full rounded-xl border border-input bg-background py-2.5 pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-4 focus:ring-ring/20"
           />
         </div>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-          Auto-synced from your confirmed orders
-        </p>
       </div>
 
       {error && (
