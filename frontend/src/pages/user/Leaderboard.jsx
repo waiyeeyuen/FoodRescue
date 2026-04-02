@@ -3,6 +3,7 @@ import { Award, Crown, Medal } from 'lucide-react';
 
 import { useAuth } from '@/context/AuthContext';
 import { Spinner } from '@/components/ui/spinner';
+import { ACCOUNT_SERVICE_URL } from '@/lib/api';
 
 function formatMetricValue(metric, value) {
   const numeric = Number(value || 0);
@@ -202,8 +203,7 @@ export default function UserLeaderboard() {
   const [leaderboards, setLeaderboards] = useState(null);
   const [stale, setStale] = useState(false);
 
-  const accountServiceUrl =
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
+  const accountServiceUrl = ACCOUNT_SERVICE_URL;
 
   useEffect(() => {
     if (!user?.id) {

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
+import { ORDER_SERVICE_URL } from '@/lib/api';
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -83,8 +84,7 @@ function normalizeStatus(value, fallback = 'new') {
 export default function RestaurantOrders() {
   const { user } = useAuth();
 
-  const orderServiceUrl =
-    import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
+  const orderServiceUrl = ORDER_SERVICE_URL;
 
   const [statusTab, setStatusTab] = useState('new');
   const [orders, setOrders] = useState([]);

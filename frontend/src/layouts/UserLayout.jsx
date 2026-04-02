@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { BellIcon, ShoppingCartIcon } from 'lucide-react';
+import { NOTIFICATION_SERVICE_URL } from '@/lib/api';
 
 function UserLayout() {
   const { user, logout, cartCount } = useAuth();
@@ -15,8 +16,7 @@ function UserLayout() {
   const notificationMenuRef = useRef(null);
   const location = useLocation();
 
-  const notificationServiceUrl =
-    import.meta.env.VITE_NOTIFICATION_SERVICE_URL || 'http://localhost:8000';
+  const notificationServiceUrl = NOTIFICATION_SERVICE_URL;
 
   const navItems = [
     { label: 'Home', path: '/' },

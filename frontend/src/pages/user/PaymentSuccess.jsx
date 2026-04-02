@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { PAYMENT_SERVICE_URL } from '@/lib/api';
 
 function readPendingCheckout() {
   try {
@@ -52,8 +53,7 @@ export default function PaymentSuccessPage() {
   const [message, setMessage] = useState('Finalising your order...');
 
   const sessionId = searchParams.get('session_id');
-  const paymentServiceUrl =
-    import.meta.env.VITE_PAYMENT_SERVICE_URL || 'http://localhost:3003';
+  const paymentServiceUrl = PAYMENT_SERVICE_URL;
 
   useEffect(() => {
     if (processedRef.current) return;

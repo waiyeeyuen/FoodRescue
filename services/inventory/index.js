@@ -30,7 +30,17 @@ const s3 = new S3Client({
   },
 });
 
-const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
+const OUTSYSTEMS_BASE = String(process.env.OUTSYSTEMS_INVENTORY_BASE_URL || '')
+  .trim()
+  .replace(/\/+$/, '')
+
+function getOutSystemsBaseUrl() {
+  if (!OUTSYSTEMS_BASE) {
+    throw new Error('OUTSYSTEMS_INVENTORY_BASE_URL is not configured')
+  }
+
+  return OUTSYSTEMS_BASE
+}
 
 async function readOutsystemsBody(response) {
   const contentType = response.headers.get('content-type') || '';
@@ -118,7 +128,7 @@ function buildDeletedListingRecord({
 }
 
 async function deleteListingInOutSystems(listingId) {
-  const url = `${OUTSYSTEMS_BASE}/DeleteFoodListing?listingId=${encodeURIComponent(listingId)}`
+  const url = `${getOutSystemsBaseUrl()}/DeleteFoodListing?listingId=${encodeURIComponent(listingId)}`
 
   const response = await fetch(url, {
     method: 'DELETE',
@@ -236,7 +246,7 @@ async function createListing(req, res) {
       cuisineType: cuisineType ?? '',
     });
 
-    const url = `${OUTSYSTEMS_BASE}/CreateListing?${params.toString()}`;
+    const url = `${getOutSystemsBaseUrl()}/CreateListing?${params.toString()}`;
 
     console.log("OutSystems URL:", url);
 
@@ -331,7 +341,7 @@ app.post('/inventory/upload-image', upload.single('image'), async (req, res) => 
 // Get all active listings
 app.get('/inventory/active', async (req, res) => {
   try {
-    const response = await fetch(`${OUTSYSTEMS_BASE}/GetActiveListing`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetActiveListing`);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch active listings' });
     }
@@ -375,7 +385,7 @@ app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
     console.log('restaurantid', restaurantId)
-    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurantId?restaurantId=${encodeURIComponent(restaurantId)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantId?restaurantId=${encodeURIComponent(restaurantId)}`);
     const data = await readOutsystemsBody(response);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch restaurant listings' });
@@ -449,7 +459,7 @@ app.get('/inventory/search/item', async (req, res) => {
   try {
     const { itemName } = req.query;
     if (!itemName) return res.status(400).json({ error: 'itemName is required' });
-    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByItemName?itemName=${encodeURIComponent(itemName)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByItemName?itemName=${encodeURIComponent(itemName)}`);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch listings by item name' });
     }
@@ -465,7 +475,7 @@ app.get('/inventory/search/restaurant-name', async (req, res) => {
   try {
     const { restaurantName } = req.query;
     if (!restaurantName) return res.status(400).json({ error: 'restaurantName is required' });
-    const response = await fetch(`${OUTSYSTEMS_BASE}/GetListingByRestaurantName?restaurantName=${encodeURIComponent(restaurantName)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantName?restaurantName=${encodeURIComponent(restaurantName)}`);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch listings by restaurant name' });
     }

@@ -15,6 +15,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
+import { INVENTORY_SERVICE_URL, PLACE_ORDER_SERVICE_URL } from '@/lib/api';
 
 function formatMoney(value) {
   const n = Number(value);
@@ -140,10 +141,8 @@ export default function UserCart() {
     getRemainingStockForListing,
   } = useAuth();
 
-  const placeOrderBaseUrl =
-    import.meta.env.VITE_PLACE_ORDER_SERVICE_URL || 'http://localhost:4001';
-  const inventoryServiceUrl =
-    import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
+  const placeOrderBaseUrl = PLACE_ORDER_SERVICE_URL;
+  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
 
   const [busyId, setBusyId] = useState(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);

@@ -51,6 +51,7 @@ services:
       - "3000:3000"
     environment:
       PORT: 3000
+      OUTSYSTEMS_INVENTORY_BASE_URL: ${OUTSYSTEMS_INVENTORY_BASE_URL:-https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
     env_file:
       - ./services/inventory/.env
@@ -85,6 +86,7 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      OUTSYSTEMS_INVENTORY_BASE_URL: ${OUTSYSTEMS_INVENTORY_BASE_URL:-https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       PLACE_ORDER_SERVICE_URL: http://place-order:4001
     env_file:
@@ -114,6 +116,7 @@ services:
       - "3005:3005"
     environment:
       PORT: 3005
+      OUTSYSTEMS_REWARD_BASE_URL: ${OUTSYSTEMS_REWARD_BASE_URL:-https://personal-zxyqgjgl.outsystemscloud.com/FoodRescueRewardsSystem/rest/RewardAPI}
     volumes:
       - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
 
@@ -245,11 +248,14 @@ services:
     ports:
       - "5173:5173"
     environment:
+      VITE_GATEWAY_URL: http://localhost:8000
       VITE_ACCOUNT_SERVICE_URL: http://localhost:8000
       VITE_INVENTORY_SERVICE_URL: http://localhost:8000
       VITE_PLACE_ORDER_SERVICE_URL: http://localhost:8000
       VITE_RECOMMENDATION_SERVICE_URL: http://localhost:8000
       VITE_ORDER_SERVICE_URL: http://localhost:8000
+      VITE_PAYMENT_SERVICE_URL: http://localhost:8000
+      VITE_NOTIFICATION_SERVICE_URL: http://localhost:8000
       VITE_DELETE_LISTING_SERVICE_URL: http://localhost:8000
       VITE_S3_BUCKET: foodrescue-listing-292659698564-ap-southeast-1-an
       VITE_AWS_REGION: ap-southeast-1

@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
 } from 'react';
+import { ACCOUNT_SERVICE_URL } from '@/lib/api';
 
 const AuthContext = createContext(null);
 
@@ -159,7 +160,7 @@ export function AuthProvider({ children }) {
   );
 
   const accountServiceBaseUrl = normalizeServiceBaseUrl(
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001',
+    ACCOUNT_SERVICE_URL,
     'account'
   );
 

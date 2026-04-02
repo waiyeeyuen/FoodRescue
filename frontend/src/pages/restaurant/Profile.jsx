@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/context/AuthContext';
+import { ACCOUNT_SERVICE_URL, ORDER_SERVICE_URL } from '@/lib/api';
 
 function normalizeRestaurantImpact(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
@@ -240,10 +241,8 @@ export default function RestaurantProfile() {
   const [loading, setLoading] = useState(false);
   const [chartRange, setChartRange] = useState('week');
 
-  const accountServiceUrl =
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
-  const orderServiceUrl =
-    import.meta.env.VITE_ORDER_SERVICE_URL || 'http://localhost:3004';
+  const accountServiceUrl = ACCOUNT_SERVICE_URL;
+  const orderServiceUrl = ORDER_SERVICE_URL;
 
   useEffect(() => {
     if (!user?.id) {

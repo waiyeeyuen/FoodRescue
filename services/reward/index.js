@@ -4,8 +4,9 @@ import { db } from "../firebase/firebaseAdmin.js";
 
 const app = express();
 const PORT = process.env.PORT || 3005;
-const BASE_URL =
-  "https://personal-zxyqgjgl.outsystemscloud.com/FoodRescueRewardsSystem/rest/RewardAPI";
+const BASE_URL = String(process.env.OUTSYSTEMS_REWARD_BASE_URL || "")
+  .trim()
+  .replace(/\/+$/, "");
 const STAMP_TARGET = 5;
 const DISCOUNT_PERCENT = 20;
 const RESTORED_REWARDS = db.collection("reward_restorations");
@@ -28,6 +29,14 @@ function parseInteger(value, defaultValue = 0) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return defaultValue;
   return Math.max(0, Math.floor(parsed));
+}
+
+function getRewardBaseUrl() {
+  if (!BASE_URL) {
+    throw new Error("OUTSYSTEMS_REWARD_BASE_URL is not configured");
+  }
+
+  return BASE_URL;
 }
 
 function parseEligibilityPayload(payload) {
@@ -133,7 +142,7 @@ async function getActiveRestoredReward(userId) {
 }
 
 async function fetchRewardEligibility(userId) {
-  const response = await fetch(`${BASE_URL}/eligibility?UserId=${encodeURIComponent(userId)}`);
+  const response = await fetch(`${getRewardBaseUrl()}/eligibility?UserId=${encodeURIComponent(userId)}`);
   const rawText = await response.text();
 
   let data = null;
@@ -247,7 +256,7 @@ app.post("/reward/update", async (req, res) => {
       });
     }
 
-    const response = await fetch(`${BASE_URL}/UpdateStatus`, {
+    const response = await fetch(`${getRewardBaseUrl()}/UpdateStatus`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ UserId: userId, VoucherId: voucherId || "" }),

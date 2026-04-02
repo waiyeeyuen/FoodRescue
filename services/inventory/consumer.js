@@ -3,15 +3,25 @@ import amqplib from 'amqplib';
 
 const RABBITMQ_URL         = process.env.RABBITMQ_URL             || 'amqp://guest:guest@localhost:5672';
 const PLACE_ORDER_URL      = process.env.PLACE_ORDER_SERVICE_URL  || 'http://localhost:4001';
-const OUTSYSTEMS_BASE      = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
+const OUTSYSTEMS_BASE      = String(process.env.OUTSYSTEMS_INVENTORY_BASE_URL || '')
+  .trim()
+  .replace(/\/+$/, '');
 
 const QUEUE = 'order.stock_check';
 const DLQ = 'order.stock_check.dlq';
 const ERROR_QUEUE = 'order.error';
 
+function getOutSystemsBaseUrl() {
+  if (!OUTSYSTEMS_BASE) {
+    throw new Error('OUTSYSTEMS_INVENTORY_BASE_URL is not configured');
+  }
+
+  return OUTSYSTEMS_BASE;
+}
+
 async function getActiveListings() {
   try {
-    const res = await fetch(`${OUTSYSTEMS_BASE}/GetActiveListing`);
+    const res = await fetch(`${getOutSystemsBaseUrl()}/GetActiveListing`);
     if (!res.ok) return null;
     const listings = await res.json();
     if (!Array.isArray(listings)) return null;
@@ -38,7 +48,7 @@ function getListingName(listing) {
 }
 
 async function decrementOutSystemsListing(itemId, boughtQuantity) {
-  const url = `${OUTSYSTEMS_BASE}/DecrementListingCount?itemId=${encodeURIComponent(itemId)}&boughtQuantity=${encodeURIComponent(boughtQuantity)}`;
+  const url = `${getOutSystemsBaseUrl()}/DecrementListingCount?itemId=${encodeURIComponent(itemId)}&boughtQuantity=${encodeURIComponent(boughtQuantity)}`;
   const res = await fetch(url, { method: 'PUT' });
   return res.ok;
 }

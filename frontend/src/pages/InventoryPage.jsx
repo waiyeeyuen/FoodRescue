@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { INVENTORY_SERVICE_URL } from '@/lib/api';
 
 function InventoryPage() {
   const { logout } = useAuth();
@@ -13,7 +14,7 @@ function InventoryPage() {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ name: '', quantity: '', supplier: '' });
 
-  const inventoryUrl = "http://localhost:3000";
+  const inventoryUrl = INVENTORY_SERVICE_URL;
 
   // Fetch all inventory items when page loads
   useEffect(() => {

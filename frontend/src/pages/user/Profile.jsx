@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { ACCOUNT_SERVICE_URL } from '@/lib/api';
 
 function normalizeUserImpact(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
@@ -103,8 +104,7 @@ export default function UserProfile() {
   const [settingsError, setSettingsError] = useState('');
   const [settingsSuccess, setSettingsSuccess] = useState('');
 
-  const accountServiceUrl =
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
+  const accountServiceUrl = ACCOUNT_SERVICE_URL;
 
   useEffect(() => {
     if (!user?.id) {

@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-
-const OUTSYSTEMS_BASE = 'https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI';
+import { INVENTORY_SERVICE_URL } from '@/lib/api';
 
 function toImageSrc(value) {
   if (!value) return null;
@@ -96,6 +95,7 @@ function ListingCard({ item }) {
 function HomePage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const inventoryUrl = INVENTORY_SERVICE_URL;
 
   const [activeListings, setActiveListings] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -109,15 +109,19 @@ function HomePage() {
 
   // Fetch all active food listings on page load
   useEffect(() => {
-    fetch(`${OUTSYSTEMS_BASE}/GetActiveListing`)
+    fetch(`${inventoryUrl}/inventory/active`)
       .then((r) => {
         if (!r.ok) throw new Error('Failed to load active listings');
         return r.json();
       })
-      .then(setActiveListings)
+      .then((data) => {
+        setActiveListings(
+          Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
+        );
+      })
       .catch((e) => setErrorActive(e.message))
       .finally(() => setLoadingActive(false));
-  }, []);
+  }, [inventoryUrl]);
 
   // Search for listings by restaurant name or item name
   const handleSearch = async (e) => {
@@ -130,12 +134,12 @@ function HomePage() {
     try {
       const q = encodeURIComponent(searchQuery.trim());
       const url = searchType === 'itemName'
-        ? `${OUTSYSTEMS_BASE}/GetListingByItemName?itemName=${q}`
-        : `${OUTSYSTEMS_BASE}/GetListingByRestaurantName?restaurantName=${q}`;
+        ? `${inventoryUrl}/inventory/search/item?itemName=${q}`
+        : `${inventoryUrl}/inventory/search/restaurant-name?restaurantName=${q}`;
       const r = await fetch(url);
       if (!r.ok) throw new Error('Failed to load search results');
       const data = await r.json();
-      setSearchResults(data);
+      setSearchResults(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
     } catch (e) {
       setErrorSearch(e.message);
     } finally {
@@ -182,8 +186,8 @@ function HomePage() {
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {activeListings.map((item) => (
-              <ListingCard key={item.Id} item={item} />
+          {activeListings.map((item) => (
+              <ListingCard key={item.Id || item.id} item={item} />
             ))}
           </div>
         </section>

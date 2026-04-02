@@ -22,6 +22,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { DELETE_LISTING_SERVICE_URL, INVENTORY_SERVICE_URL } from '@/lib/api';
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -110,10 +111,8 @@ async function readResponseBody(response) {
 }
 
 export default function RestaurantListings() {
-  const inventoryServiceUrl =
-    import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
-  const deleteListingServiceUrl =
-    import.meta.env.VITE_DELETE_LISTING_SERVICE_URL || 'http://localhost:8000';
+  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
+  const deleteListingServiceUrl = DELETE_LISTING_SERVICE_URL;
 
   const { user } = useAuth();
   const restaurantId = user?.id;

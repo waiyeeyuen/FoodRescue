@@ -25,6 +25,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  ACCOUNT_SERVICE_URL,
+  INVENTORY_SERVICE_URL,
+  RECOMMENDATION_SERVICE_URL,
+} from '@/lib/api';
 
 const MAX_RECOMMENDATIONS = 4;
 function getImpactCacheKey(userId) {
@@ -240,12 +245,9 @@ function ListingCard({
 }
 
 export default function UserHome() {
-  const inventoryServiceUrl =
-    import.meta.env.VITE_INVENTORY_SERVICE_URL || 'http://localhost:3000';
-  const recommendationServiceUrl =
-    import.meta.env.VITE_RECOMMENDATION_SERVICE_URL || 'http://localhost:4000';
-  const accountServiceUrl =
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
+  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
+  const recommendationServiceUrl = RECOMMENDATION_SERVICE_URL;
+  const accountServiceUrl = ACCOUNT_SERVICE_URL;
   const {
     user,
     addToCart,

@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 
 import { useAuth } from '@/context/AuthContext';
+import { ACCOUNT_SERVICE_URL } from '@/lib/api';
 
 export default function RestaurantSettings() {
   const { user } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const accountServiceUrl =
-    import.meta.env.VITE_ACCOUNT_SERVICE_URL || 'http://localhost:3001';
+  const accountServiceUrl = ACCOUNT_SERVICE_URL;
 
   useEffect(() => {
     if (!user?.id) {
