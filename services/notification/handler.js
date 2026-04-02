@@ -1,7 +1,5 @@
 // handler.js
-import { db } from '../firebase/firebaseAdmin.js';
-import admin from '../firebase/firebaseAdmin.js';
-import { FieldValue } from 'firebase-admin/firestore';
+import { db, FieldValue } from '../firebase/firebaseAdmin.js';
 
 export async function handleEvent(message) {
   const event = JSON.parse(message.content.toString());

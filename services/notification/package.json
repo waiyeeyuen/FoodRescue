@@ -1,0 +1,17 @@
+{
+  "name": "notification",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "test:sms": "node test-sms.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "twilio": "^5.8.0"
+  }
+}

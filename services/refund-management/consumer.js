@@ -6,10 +6,17 @@ const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost
 
 const QUEUE = 'order.error';
 const DLQ = 'order.error.dlq';
-const DLX = 'order.error.dlx';
 const FAILURE_QUEUE = 'refund.failed';
 
 const MAX_RETRIES = 3;
+
+function publishToQueue(channel, queue, content, headers = {}) {
+  channel.sendToQueue(queue, content, {
+    persistent: true,
+    contentType: 'application/json',
+    headers,
+  });
+}
 
 function maskUrl(url) {
   try {
@@ -72,23 +79,20 @@ async function sendRefund({ paymentId, amount, reason }) {
   return { ok: res.ok, status: res.status, text };
 }
 
+function sendToDlq(channel, msg, reason) {
+  publishToQueue(channel, DLQ, msg.content, {
+    ...msg.properties.headers,
+    'x-error': reason,
+    'x-source-queue': QUEUE,
+  });
+}
+
 async function start() {
   const connection = await connectWithRetry();
   const channel = await connection.createChannel();
 
-  // DLX setup (for invalid messages only)
-  await channel.assertExchange(DLX, 'direct', { durable: true });
-
   await channel.assertQueue(DLQ, { durable: true });
-  await channel.bindQueue(DLQ, DLX, 'dlq');
-
-  await channel.assertQueue(QUEUE, {
-    durable: true,
-    arguments: {
-      'x-dead-letter-exchange': DLX,
-      'x-dead-letter-routing-key': 'dlq',
-    },
-  });
+  await channel.assertQueue(QUEUE, { durable: true });
 
   // Failure queue (NEW)
   await channel.assertQueue(FAILURE_QUEUE, { durable: true });
@@ -106,15 +110,17 @@ async function start() {
     try {
       payload = JSON.parse(msg.content.toString());
     } catch {
-      console.error('[refund-management] Invalid JSON; rejecting to DLQ');
-      channel.reject(msg, false); // DLX handles
+      console.error('[refund-management] Invalid JSON; sending to DLQ');
+      sendToDlq(channel, msg, 'invalid_json');
+      channel.ack(msg);
       return;
     }
 
     const paymentId = payload?.paymentId;
     if (!paymentId) {
-      console.error('[refund-management] Missing paymentId; rejecting to DLQ');
-      channel.reject(msg, false);
+      console.error('[refund-management] Missing paymentId; sending to DLQ');
+      sendToDlq(channel, msg, 'missing_payment_id');
+      channel.ack(msg);
       return;
     }
 
@@ -144,27 +150,19 @@ async function start() {
       if (retryCount < MAX_RETRIES) {
         console.warn(`[refund-management] Retry ${retryCount + 1}/${MAX_RETRIES}`);
 
-        channel.sendToQueue(QUEUE, msg.content, {
-          persistent: true,
-          contentType: 'application/json',
-          headers: {
-            ...msg.properties.headers,
-            'x-retry-count': retryCount + 1,
-          },
+        publishToQueue(channel, QUEUE, msg.content, {
+          ...msg.properties.headers,
+          'x-retry-count': retryCount + 1,
         });
 
       } else {
         console.error('[refund-management] Max retries reached → sending to failure queue');
 
-        channel.sendToQueue(FAILURE_QUEUE, msg.content, {
-          persistent: true,
-          contentType: 'application/json',
-          headers: {
-            ...msg.properties.headers,
-            'x-retry-count': retryCount,
-            'x-error': `refund_failed_${result.status}`,
-            'x-response': String(result.text || '').slice(0, 1000),
-          },
+        publishToQueue(channel, FAILURE_QUEUE, msg.content, {
+          ...msg.properties.headers,
+          'x-retry-count': retryCount,
+          'x-error': `refund_failed_${result.status}`,
+          'x-response': String(result.text || '').slice(0, 1000),
         });
       }
 
@@ -174,23 +172,15 @@ async function start() {
       console.error('[refund-management] Network/system error:', err?.message);
 
       if (retryCount < MAX_RETRIES) {
-        channel.sendToQueue(QUEUE, msg.content, {
-          persistent: true,
-          contentType: 'application/json',
-          headers: {
-            ...msg.properties.headers,
-            'x-retry-count': retryCount + 1,
-          },
+        publishToQueue(channel, QUEUE, msg.content, {
+          ...msg.properties.headers,
+          'x-retry-count': retryCount + 1,
         });
       } else {
-        channel.sendToQueue(FAILURE_QUEUE, msg.content, {
-          persistent: true,
-          contentType: 'application/json',
-          headers: {
-            ...msg.properties.headers,
-            'x-retry-count': retryCount,
-            'x-error': err?.message || String(err),
-          },
+        publishToQueue(channel, FAILURE_QUEUE, msg.content, {
+          ...msg.properties.headers,
+          'x-retry-count': retryCount,
+          'x-error': err?.message || String(err),
         });
       }
 
