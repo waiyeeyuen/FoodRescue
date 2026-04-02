@@ -263,8 +263,10 @@ export default function UserHome() {
   const [geminiUsed, setGeminiUsed] = useState(false);
   const [impactProfile, setImpactProfile] = useState(null);
   const [impactUnavailable, setImpactUnavailable] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [listingsLoading, setListingsLoading] = useState(true);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(Boolean(user?.id));
+  const [listingsError, setListingsError] = useState(null);
+  const [recommendationsError, setRecommendationsError] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [orderQty, setOrderQty] = useState(0);
@@ -324,13 +326,15 @@ export default function UserHome() {
     const controller = new AbortController();
 
     async function loadListings() {
-      try {
-        setLoading(true);
-        setError(null);
+      setListingsLoading(true);
+      setRecommendationsLoading(Boolean(user?.id));
+      setListingsError(null);
+      setRecommendationsError(null);
 
-        const inventoryPromise = fetch(`${inventoryServiceUrl}/inventory/active`, {
-          signal: controller.signal,
-        }).then(async (inventoryRes) => {
+      const inventoryPromise = fetch(`${inventoryServiceUrl}/inventory/active`, {
+        signal: controller.signal,
+      })
+        .then(async (inventoryRes) => {
           if (!inventoryRes.ok) {
             let message = 'Failed to load active listings';
             try {
@@ -346,13 +350,26 @@ export default function UserHome() {
             : Array.isArray(inventoryData)
               ? inventoryData
               : [];
+        })
+        .then((inventoryListings) => {
+          if (controller.signal.aborted) return;
+          setActiveListings(inventoryListings);
+        })
+        .catch((e) => {
+          if (e?.name === 'AbortError' || controller.signal.aborted) return;
+          setListingsError(e?.message || 'Failed to load active listings');
+          setActiveListings([]);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setListingsLoading(false);
         });
 
-        const recommendationsPromise = user?.id
-          ? fetch(
-              `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}?maxListings=${MAX_RECOMMENDATIONS}`,
-              { signal: controller.signal }
-            ).then(async (recRes) => {
+      const recommendationsPromise = user?.id
+        ? fetch(
+            `${recommendationServiceUrl}/recommendations/${encodeURIComponent(user.id)}?maxListings=${MAX_RECOMMENDATIONS}`,
+            { signal: controller.signal }
+          )
+            .then(async (recRes) => {
               if (!recRes.ok) {
                 throw new Error('Failed to load recommendations');
               }
@@ -381,28 +398,34 @@ export default function UserHome() {
                 geminiReasoning: recData?.gemini?.reasoning || '',
               };
             })
-          : Promise.resolve({
-              listings: [],
-              geminiUsed: false,
-              geminiReasoning: '',
-            });
+            .then((recommendationResult) => {
+              if (controller.signal.aborted) return;
+              setRecommendedListings(recommendationResult.listings);
+              setGeminiUsed(recommendationResult.geminiUsed);
+              setGeminiReasoning(recommendationResult.geminiReasoning);
+            })
+            .catch((e) => {
+              if (e?.name === 'AbortError' || controller.signal.aborted) return;
+              setRecommendationsError(e?.message || 'Failed to load recommendations');
+              setRecommendedListings([]);
+              setGeminiUsed(false);
+              setGeminiReasoning('');
+            })
+            .finally(() => {
+              if (!controller.signal.aborted) setRecommendationsLoading(false);
+            })
+        : Promise.resolve().then(() => {
+            if (controller.signal.aborted) return;
+            setRecommendedListings([]);
+            setGeminiUsed(false);
+            setGeminiReasoning('');
+            setRecommendationsLoading(false);
+          });
 
-        const [inventoryListings, recommendationResult] = await Promise.all([
-          inventoryPromise,
-          recommendationsPromise,
-        ]);
-
-        if (controller.signal.aborted) return;
-
-        setActiveListings(inventoryListings);
-        setRecommendedListings(recommendationResult.listings);
-        setGeminiUsed(recommendationResult.geminiUsed);
-        setGeminiReasoning(recommendationResult.geminiReasoning);
+      try {
+        await Promise.all([inventoryPromise, recommendationsPromise]);
       } catch (e) {
         if (e?.name === 'AbortError') return;
-        setError(e?.message || 'Failed to load homepage');
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
       }
     }
 
@@ -484,6 +507,11 @@ export default function UserHome() {
   }, [stockAdjustedRecommendedListings, searchQuery]);
 
   const regularListings = visibleListings;
+  const hasRecommendedListings = stockAdjustedRecommendedListings.length > 0;
+  const shouldShowRecommendationsLoading =
+    recommendationsLoading && !hasRecommendedListings && !recommendationsError;
+  const shouldShowListingsLoading =
+    listingsLoading && stockAdjustedListings.length === 0 && !listingsError;
 
   const heroStats = useMemo(() => {
     const restaurantCount = new Set(
@@ -637,195 +665,159 @@ export default function UserHome() {
 
   return (
     <div className="flex flex-col gap-6">
-      {loading ? (
-        <div className="flex items-center justify-center gap-3 py-16">
-          <Spinner className="size-6" />
-          <span className="text-sm text-muted-foreground">Loading listings...</span>
-        </div>
-      ) : error ? (
-        <p className="text-sm text-red-600">{error}</p>
-      ) : stockAdjustedListings.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No active listings found.</p>
-      ) : visibleListings.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No matches for your search.</p>
-      ) : (
-        <div className="flex flex-col gap-8">
-          <div className="flex flex-col gap-4">
-            <section className="spotlight-panel overflow-hidden rounded-[30px] p-5 sm:p-6">
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_15rem] lg:items-center">
-                <div>
-                  <span className="hero-kicker">
-                    {user?.username ? `Welcome back, ${user.username}` : 'Daily rescue drop'}
-                  </span>
-                  <h1 className="hero-title mt-4 max-w-4xl text-4xl text-slate-900 sm:text-5xl lg:text-[4rem] lg:leading-[0.94] xl:text-[4.6rem]">
-                    Rescue great food before the clock runs out.
-                  </h1>
-                  <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-                    Browse nearby surplus meals, lock in pickup, and build a stronger rescue habit
-                    one order at a time.
-                  </p>
+      <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-4">
+          <section className="spotlight-panel overflow-hidden rounded-[30px] p-5 sm:p-6">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_15rem] lg:items-center">
+              <div>
+                <span className="hero-kicker">
+                  {user?.username ? `Welcome back, ${user.username}` : 'Daily rescue drop'}
+                </span>
+                <h1 className="hero-title mt-4 max-w-4xl text-4xl text-slate-900 sm:text-5xl lg:text-[4rem] lg:leading-[0.94] xl:text-[4.6rem]">
+                  Rescue great food before the clock runs out.
+                </h1>
+                <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+                  Browse nearby surplus meals, lock in pickup, and build a stronger rescue habit
+                  one order at a time.
+                </p>
 
-                  <div className="relative mt-5 max-w-2xl overflow-hidden rounded-[22px]">
-                    <SearchIcon className="pointer-events-none absolute left-4 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
+                <div className="relative mt-5 max-w-2xl overflow-hidden rounded-[22px]">
+                  <SearchIcon className="pointer-events-none absolute left-4 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
 
-                    <input
-                      ref={inputRef}
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search by item, restaurant, cuisine..."
-                      className="w-full rounded-[22px] border border-input bg-white/90 py-3 pl-11 pr-12 text-sm text-foreground placeholder:text-muted-foreground shadow-[0_22px_44px_-28px_rgba(24,36,33,0.45)] focus:outline-none focus:ring-4 focus:ring-ring/20"
-                    />
+                  <input
+                    ref={inputRef}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by item, restaurant, cuisine..."
+                    className="w-full rounded-[22px] border border-input bg-white/90 py-3 pl-11 pr-12 text-sm text-foreground placeholder:text-muted-foreground shadow-[0_22px_44px_-28px_rgba(24,36,33,0.45)] focus:outline-none focus:ring-4 focus:ring-ring/20"
+                  />
 
-                    {searchQuery.trim() !== '' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSearchQuery('');
-                          requestAnimationFrame(() => {
-                            inputRef.current?.focus();
-                          });
-                        }}
-                        className="absolute right-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Clear search"
-                      >
-                        <XIcon className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid gap-3">
-                  {heroStats.map((stat) => (
-                    <div
-                      key={stat.label}
-                      className="rounded-[22px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]"
+                  {searchQuery.trim() !== '' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery('');
+                        requestAnimationFrame(() => {
+                          inputRef.current?.focus();
+                        });
+                      }}
+                      className="absolute right-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      aria-label="Clear search"
                     >
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                        {stat.label}
-                      </p>
-                      <p className={`mt-2 text-[2.35rem] font-semibold leading-none ${stat.tone}`}>{stat.value}</p>
-                    </div>
-                  ))}
+                      <XIcon className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
               </div>
-            </section>
 
-            <section className="grid gap-3 md:grid-cols-3">
-              {[
-                {
-                  label: 'Days saved',
-                  value: impactSummary.daysSaved,
-                  suffix: 'days',
-                  note: 'Completed pickup days',
-                  tone: 'text-[var(--brand-ink)]',
-                },
-                {
-                  label: 'CO2 saved',
-                  value: impactSummary.co2KgSaved.toFixed(0),
-                  suffix: 'kg',
-                  note: 'Updated from completed pickups',
-                  tone: 'text-[var(--brand-coral)]',
-                },
-                {
-                  label: 'Water saved',
-                  value: impactSummary.waterLitersSaved.toFixed(0),
-                  suffix: 'L',
-                  note: 'Each rescued meal adds impact',
-                  tone: 'text-[var(--brand-gold)]',
-                },
-              ].map((card) => (
-                <section
-                  key={card.label}
-                  className="spotlight-panel rounded-[24px] p-5"
-                >
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    {card.label}
-                  </p>
-                <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>
-                  {impactUnavailable && !impactProfile ? '—' : card.value}
-                  <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
+              <div className="grid gap-3">
+                {heroStats.map((stat) => (
+                  <div
+                    key={stat.label}
+                    className="rounded-[22px] border border-white/70 bg-white/72 p-4 shadow-[0_18px_36px_-28px_rgba(24,36,33,0.45)]"
+                  >
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      {stat.label}
+                    </p>
+                    <p className={`mt-2 text-[2.35rem] font-semibold leading-none ${stat.tone}`}>{stat.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-3 md:grid-cols-3">
+            {[
+              {
+                label: 'Days saved',
+                value: impactSummary.daysSaved,
+                suffix: 'days',
+                note: 'Completed pickup days',
+                tone: 'text-[var(--brand-ink)]',
+              },
+              {
+                label: 'CO2 saved',
+                value: impactSummary.co2KgSaved.toFixed(0),
+                suffix: 'kg',
+                note: 'Updated from completed pickups',
+                tone: 'text-[var(--brand-coral)]',
+              },
+              {
+                label: 'Water saved',
+                value: impactSummary.waterLitersSaved.toFixed(0),
+                suffix: 'L',
+                note: 'Each rescued meal adds impact',
+                tone: 'text-[var(--brand-gold)]',
+              },
+            ].map((card) => (
+              <section
+                key={card.label}
+                className="spotlight-panel rounded-[24px] p-5"
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  {card.label}
                 </p>
-                {card.label === 'Days saved' ? (
-                  <div className="mt-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-xs font-medium text-slate-400">
-                        {impactUnavailable && !impactProfile
-                          ? 'Impact data unavailable'
-                          : `${streakData.streak} day${streakData.streak === 1 ? '' : 's'} in a row`}
-                      </p>
-                        <div className="flex items-center gap-2">
-                          {streakData.recentDays.map((day) => (
-                            <div
-                              key={day.key}
-                              title={day.label}
-                              className={`flex h-8 w-8 items-center justify-center rounded-full ${
-                                day.active
-                                  ? 'bg-orange-100 text-orange-600 ring-1 ring-orange-200'
-                                  : 'bg-slate-100 text-slate-300 ring-1 ring-slate-200'
-                              }`}
-                            >
-                              <FlameIcon className="h-3.5 w-3.5" />
-                            </div>
-                          ))}
-                        </div>
+              <p className={`mt-3 text-3xl font-semibold ${card.tone}`}>
+                {impactUnavailable && !impactProfile ? '—' : card.value}
+                <span className="ml-2 text-sm font-medium text-slate-500">{card.suffix}</span>
+              </p>
+              {card.label === 'Days saved' ? (
+                <div className="mt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs font-medium text-slate-400">
+                      {impactUnavailable && !impactProfile
+                        ? 'Impact data unavailable'
+                        : `${streakData.streak} day${streakData.streak === 1 ? '' : 's'} in a row`}
+                    </p>
+                      <div className="flex items-center gap-2">
+                        {streakData.recentDays.map((day) => (
+                          <div
+                            key={day.key}
+                            title={day.label}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full ${
+                              day.active
+                                ? 'bg-orange-100 text-orange-600 ring-1 ring-orange-200'
+                                : 'bg-slate-100 text-slate-300 ring-1 ring-slate-200'
+                            }`}
+                          >
+                            <FlameIcon className="h-3.5 w-3.5" />
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ) : (
-                    <p className="mt-2 text-sm text-slate-500">{card.note}</p>
-                  )}
-                </section>
-              ))}
-            </section>
-
-            {visibleRecommendedListings.length > 0 && (
-              <section className="flex flex-col gap-2.5 rounded-[28px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm">
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-900">Recommended for you</h2>
-                  <p className="text-xs text-muted-foreground sm:text-sm">
-                    {geminiUsed
-                      ? 'Personalized picks ranked from your completed order history.'
-                      : 'Matched from your completed order history.'}
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  {visibleRecommendedListings.map((item, idx) => {
-                    const key = getListingId(item) ?? `rec-${idx}`;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => handleCardClick(item)}
-                        className="rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
-                      >
-                        <div className="group h-full">
-                          <ListingCard
-                            item={item}
-                            aiRecommended={true}
-                            aiReason={item?.aiReason ?? null}
-                            compact={true}
-                          />
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-500">{card.note}</p>
+                )}
               </section>
-            )}
-          </div>
+            ))}
+          </section>
 
-          <section className="flex flex-col gap-3 rounded-[30px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm sm:p-5">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-900">All listings</h2>
-              <p className="text-sm text-muted-foreground">Browse all available food listings</p>
-            </div>
+          {shouldShowRecommendationsLoading ? (
+            <section className="flex flex-col gap-2.5 rounded-[28px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm">
+              <div className="flex items-center justify-center gap-3 py-12">
+                <Spinner className="size-6" />
+                <span className="text-sm text-muted-foreground">Loading recommendations...</span>
+              </div>
+            </section>
+          ) : recommendationsError && !hasRecommendedListings ? (
+            <section className="flex flex-col gap-2.5 rounded-[28px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm">
+              <p className="text-sm text-red-600">{recommendationsError}</p>
+            </section>
+          ) : visibleRecommendedListings.length > 0 ? (
+            <section className="flex flex-col gap-2.5 rounded-[28px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Recommended for you</h2>
+                <p className="text-xs text-muted-foreground sm:text-sm">
+                  {geminiUsed
+                    ? 'Personalized picks ranked from your completed order history.'
+                    : 'Matched from your completed order history.'}
+                </p>
+              </div>
 
-            {regularListings.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No general listings match your search.</p>
-            ) : (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {regularListings.map((item, idx) => {
-                  const key = getListingId(item) ?? `all-${idx}`;
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {visibleRecommendedListings.map((item, idx) => {
+                  const key = getListingId(item) ?? `rec-${idx}`;
                   return (
                     <button
                       key={key}
@@ -833,21 +825,64 @@ export default function UserHome() {
                       onClick={() => handleCardClick(item)}
                       className="rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
                     >
-                      <div className="group">
+                      <div className="group h-full">
                         <ListingCard
                           item={item}
-                          aiRecommended={Boolean(item?.aiRecommended)}
+                          aiRecommended={true}
                           aiReason={item?.aiReason ?? null}
+                          compact={true}
                         />
                       </div>
                     </button>
                   );
                 })}
               </div>
-            )}
-          </section>
+            </section>
+          ) : null}
         </div>
-      )}
+
+        <section className="flex flex-col gap-3 rounded-[30px] border border-white/60 bg-white/35 p-4 backdrop-blur-sm sm:p-5">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900">All listings</h2>
+            <p className="text-sm text-muted-foreground">Browse all available food listings</p>
+          </div>
+
+          {shouldShowListingsLoading ? (
+            <div className="flex items-center justify-center gap-3 py-16">
+              <Spinner className="size-6" />
+              <span className="text-sm text-muted-foreground">Loading listings...</span>
+            </div>
+          ) : listingsError && stockAdjustedListings.length === 0 ? (
+            <p className="text-sm text-red-600">{listingsError}</p>
+          ) : stockAdjustedListings.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No active listings found.</p>
+          ) : regularListings.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No general listings match your search.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {regularListings.map((item, idx) => {
+                const key = getListingId(item) ?? `all-${idx}`;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => handleCardClick(item)}
+                    className="rounded-2xl text-left transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-ring/30"
+                  >
+                    <div className="group">
+                      <ListingCard
+                        item={item}
+                        aiRecommended={Boolean(item?.aiRecommended)}
+                        aiReason={item?.aiReason ?? null}
+                      />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+        </div>
 
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-md overflow-hidden rounded-3xl p-0">
