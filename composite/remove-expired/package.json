@@ -1,0 +1,16 @@
+{
+  "name": "composite-remove-expired",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1"
+  }
+}
+
