@@ -97,11 +97,6 @@ function RoleToggle({ userType, onChange, compact = false }) {
                   <Icon className="h-5 w-5" />
                 </div>
               </div>
-              {active && (
-                <div className="mt-3 inline-flex rounded-full bg-[var(--brand-ink)] px-3 py-1 text-xs font-semibold text-white">
-                  Selected
-                </div>
-              )}
             </button>
           );
         })}
