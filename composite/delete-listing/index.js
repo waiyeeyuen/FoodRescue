@@ -13,8 +13,8 @@ const INVENTORY_SERVICE_URL =
   process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
 const ORDER_SERVICE_URL =
   process.env.ORDER_SERVICE_URL || "http://localhost:3004";
-const PAYMENT_SERVICE_URL =
-  process.env.PAYMENT_SERVICE_URL || "http://localhost:3003";
+const REFUND_MANAGEMENT_SERVICE_URL =
+  process.env.REFUND_MANAGEMENT_SERVICE_URL || "http://localhost:3007";
 const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
 const REWARD_SERVICE_URL =
@@ -319,24 +319,20 @@ async function getAffectedOrders({
   );
 }
 
-async function getPaymentForOrder(orderId) {
-  return fetchJson(
-    `${PAYMENT_SERVICE_URL}/payments/order/${encodeURIComponent(orderId)}`
-  );
-}
-
-async function refundPayment({ paymentId, amountMinor, reason }) {
-  return fetchJson(
-    `${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amount: amountMinor,
-        reason,
-      }),
-    }
-  );
+async function processRefund({
+  orderId,
+  amountMinor,
+  reason,
+}) {
+  return fetchJson(`${REFUND_MANAGEMENT_SERVICE_URL}/refund-management/refund`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderId,
+      amountMinor,
+      reason,
+    }),
+  });
 }
 
 async function markOrderItemRefunded({
@@ -643,62 +639,51 @@ async function handleDeleteListing(req, res) {
       restaurantName,
     });
 
-    const plannedRefunds = [];
-
-    for (const order of affectedOrders?.orders || []) {
-      const payment = await getPaymentForOrder(order.orderId);
-
-      if (!payment?.paymentId) {
-        const error = new Error(`Missing payment record for order ${order.orderId}`);
-        error.status = 502;
-        throw error;
-      }
-
-      plannedRefunds.push({
-        order,
-        paymentId: payment.paymentId,
-        payment,
-      });
-    }
-
     const refundReason = buildRefundReason({ listing, customReason: reason });
 
-    for (const plan of plannedRefunds) {
-      const totalRefundAmountMinor = Number(plan.order?.totalRefundAmountMinor || 0);
-      const totalRefundAmount = Number(plan.order?.totalRefundAmount || 0);
+    for (const order of affectedOrders?.orders || []) {
+      const totalRefundAmountMinor = Number(order?.totalRefundAmountMinor || 0);
+      const totalRefundAmount = Number(order?.totalRefundAmount || 0);
 
       if (totalRefundAmountMinor <= 0) {
         continue;
       }
 
-      await refundPayment({
-        paymentId: plan.paymentId,
+      const refundResponse = await processRefund({
+        orderId: order.orderId,
         amountMinor: totalRefundAmountMinor,
         reason: refundReason,
       });
 
-      for (const item of plan.order?.items || []) {
+      const paymentId = String(refundResponse?.paymentId || "").trim();
+      if (!paymentId) {
+        const error = new Error(`Missing paymentId in refund response for order ${order.orderId}`);
+        error.status = 502;
+        throw error;
+      }
+
+      for (const item of order?.items || []) {
         await markOrderItemRefunded({
-          orderId: plan.order.orderId,
+          orderId: order.orderId,
           itemId: item.itemId,
           restaurantId,
           restaurantName,
           reason: refundReason,
           refundAmount: Number(item.refundAmount || 0),
-          paymentId: plan.paymentId,
+          paymentId,
         });
       }
 
       results.refundsProcessed.push({
-        orderId: plan.order.orderId,
-        paymentId: plan.paymentId,
-        customerId: plan.order.customerId,
-        currency: plan.order.currency || "sgd",
+        orderId: order.orderId,
+        paymentId,
+        customerId: order.customerId,
+        currency: order.currency || "sgd",
         refundAmountMinor: totalRefundAmountMinor,
         refundAmount: totalRefundAmount,
-        listingQuantity: sumListingQuantity(plan.order?.items),
-        rewardUsed: hasUsedReward(plan.payment),
-        rewardVoucherId: String(plan.payment?.reward?.voucherId || ""),
+        listingQuantity: sumListingQuantity(order?.items),
+        rewardUsed: hasUsedReward({ reward: refundResponse?.reward || null }),
+        rewardVoucherId: String(refundResponse?.reward?.voucherId || ""),
       });
     }
 

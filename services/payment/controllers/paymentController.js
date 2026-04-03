@@ -221,6 +221,48 @@ export async function refundPayment(req, res) {
   }
 }
 
+export async function recordRefundResult(req, res) {
+  try {
+    const { paymentId } = req.params;
+    const {
+      refundId = "",
+      refundStatus = "succeeded",
+      refundAmount,
+      refundReason = "",
+    } = req.body || {};
+
+    const payment = await getPaymentByIdFromDb(paymentId);
+    if (!payment) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
+    const normalizedRefundAmount =
+      Number(refundAmount ?? payment.amountTotal ?? 0) || Number(payment.amountTotal || 0) || 0;
+    const originalAmount = Number(payment.amountTotal || 0) || 0;
+    const fullRefund = normalizedRefundAmount >= originalAmount;
+
+    const updatedPayment = await updatePayment(paymentId, {
+      status: fullRefund ? "refunded" : "partially_refunded",
+      refundStatus: refundStatus || "succeeded",
+      refundId: String(refundId || ""),
+      refundAmount: normalizedRefundAmount,
+      refundReason: String(refundReason || ""),
+      refundCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({
+      success: true,
+      payment: updatedPayment,
+    });
+  } catch (error) {
+    console.error("[Refund Sync] ❌ Error:", error.message);
+    return res.status(500).json({
+      error: "Failed to sync refund result",
+      details: error.message,
+    });
+  }
+}
+
 export async function logPayment(req, res) {
   try {
     const { orderId, paymentId, amount, status } = req.body;

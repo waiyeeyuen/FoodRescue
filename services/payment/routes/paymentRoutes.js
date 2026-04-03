@@ -6,6 +6,7 @@ import {
   getPaymentByOrderId,
   createCheckoutSession,
   refundPayment,
+  recordRefundResult,
   logPayment,
   confirmCheckoutSession,
   handleStripeWebhook
@@ -21,5 +22,6 @@ router.post("/checkout-session", createCheckoutSession);
 router.post("/confirm-session", confirmCheckoutSession);
 router.post("/log", logPayment);
 router.post("/:paymentId/refund", refundPayment);
+router.post("/:paymentId/refund-record", recordRefundResult);
 
 export { router as paymentRoutes, handleStripeWebhook };

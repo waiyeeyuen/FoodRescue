@@ -160,6 +160,8 @@ services:
       rabbitmq:
         condition: service_healthy
     environment:
+      PORT: 3007
+      PAYMENT_SERVICE_URL: http://payment:3003
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
     env_file:
       - ./services/payment/.env
@@ -189,7 +191,7 @@ services:
       PORT: 4005
       INVENTORY_SERVICE_URL: http://inventory:3000
       ORDER_SERVICE_URL: http://order:3004
-      PAYMENT_SERVICE_URL: http://payment:3003
+      REFUND_MANAGEMENT_SERVICE_URL: http://refund-management:3007
       NOTIFICATION_SERVICE_URL: http://notification:3006
       REWARD_SERVICE_URL: http://reward:3005
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
