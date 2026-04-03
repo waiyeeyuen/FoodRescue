@@ -29,7 +29,7 @@ export async function sendNotification(notificationData) {
   try {
     switch (channel) {
       case 'IN_APP':
-        console.log('✅ In-app notification stored for:', userId);
+        console.log('In-app notification stored for:', userId);
         return 'STORED';
       case 'SMS':
         if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
@@ -45,21 +45,21 @@ export async function sendNotification(notificationData) {
           from: process.env.TWILIO_PHONE_NUMBER,
           to
         });
-        console.log('✅ SMS sent:', smsResult.sid);
+        console.log('SMS sent:', smsResult.sid);
         return 'SENT';
       case 'PUSH':
         const pushResult = await messaging.send({
           token: `fcm_token_user_${userId}`,
           notification: { title, body: message }
         });
-        console.log('✅ Push sent:', pushResult);
+        console.log('Push sent:', pushResult);
         return 'SENT';
       default:
-        console.warn('⚠️ Unknown channel:', channel);
+        console.warn('Unknown channel:', channel);
         return 'SKIPPED';
     }
   } catch (error) {
-    console.error('❌ Send failed:', JSON.stringify({
+    console.error('Send failed:', JSON.stringify({
       message: error?.message,
       code: error?.code,
       status: error?.status,

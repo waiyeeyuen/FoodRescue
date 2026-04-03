@@ -278,7 +278,7 @@ app.post('/orders', async (req, res) => {
       return res.status(400).json({ error: 'Validation failed', details: errors });
     }
 
-    // ✅ Use the orderId passed by the consumer (same as payment metadata), or generate one
+    // Use the orderId passed by the consumer (same as payment metadata), or generate one
     const orderId = incomingOrderId || generateOrderId();
     const now = new Date();
     const normalizedItems = items.map((item) => normalizeStoredItem(item, status || 'pending_payment'));

@@ -33,15 +33,15 @@ export async function handleEvent(message) {
 
 export function getTitle(type) {
   const titles = {
-    'ORDER_EXPIRED':    'Order Expired 😔',
-    'LISTING_EXPIRED':  'Reservation Cancelled 🍽️',
-    'LISTING_DELETED_REFUND': 'Listing Removed, Refund Issued 💸',
-    'REWARD_TRIGGERED': 'Reward Unlocked! 🎉',
-    'ORDER_CONFIRMED':  'Order Confirmed 🎉',
-    'ORDER_PARTIAL':    'Partial Order Confirmed ⚠️',
-    'ORDER_REFUNDED':   'Order Refunded 💸',
-    'ORDER_READY':      'Ready for Collection 🍱',
-    'ORDER_COMPLETED':  'Order Completed ✅',
+    'ORDER_EXPIRED':    'Order Expired',
+    'LISTING_EXPIRED':  'Reservation Cancelled',
+    'LISTING_DELETED_REFUND': 'Listing Removed, Refund Issued',
+    'REWARD_TRIGGERED': 'Reward Unlocked!',
+    'ORDER_CONFIRMED':  'Order Confirmed',
+    'ORDER_PARTIAL':    'Partial Order Confirmed',
+    'ORDER_REFUNDED':   'Order Refunded',
+    'ORDER_READY':      'Ready for Collection',
+    'ORDER_COMPLETED':  'Order Completed',
   };
   return titles[type] || 'New Notification';
 }

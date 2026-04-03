@@ -53,7 +53,7 @@ export async function connectRabbitMQ() {
     await channel.assertQueue(queue, { durable: true });
   }
 
-  console.log('✅ RabbitMQ connected + queues ready');
+  console.log('RabbitMQ connected + queues ready');
   return channel;
 }
 

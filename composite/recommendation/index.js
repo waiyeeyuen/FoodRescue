@@ -266,55 +266,61 @@ app.get("/recommendations/:userId", async (req, res) => {
   const requestedListingIds = normalizeCsv(
     req.query.listingIds ?? req.query.listing_ids ?? req.query.listing_id
   );
+let orderHistoryResponse = null;
+let inventoryListings = null;
+let rewardEligibility = null;
 
-  let orderHistoryResponse = null;
-  let inventoryListings = null;
-  let rewardEligibility = null;
+let orderHistory = [];
+let totalConfirmedOrders = 0;
+let listings = [];
 
-  // Step 1 — Order service
-  let orderHistory = [];
-  let totalConfirmedOrders = 0;
+try {
+  const [orderRes, inventoryRes] = await Promise.all([
+    fetchJson(`${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`),
+    fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`)
+  ]);
+
+  // Order processing
+  orderHistoryResponse = orderRes;
+  orderHistory = Array.isArray(orderRes?.orderHistory) ? orderRes.orderHistory : [];
+  totalConfirmedOrders = Number(orderRes?.totalOrders ?? orderHistory.length) || orderHistory.length;
+  console.log("Order hit! order history:", orderHistory);
+
+  // Inventory processing
+  inventoryListings = inventoryRes;
+  listings = Array.isArray(inventoryRes) ? inventoryRes : [];
+  console.log("Inventory hit! listings:", listings);
+
+} catch (error) {
+  console.log("Parallel fetch error:", error.message);
+
+  // fallback individually
   try {
-    orderHistoryResponse = await fetchJson(
-      `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`
-    );
-    orderHistory = Array.isArray(orderHistoryResponse?.orderHistory)
-      ? orderHistoryResponse.orderHistory
-      : [];
+    orderHistoryResponse = await fetchJson(`${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`);
+    orderHistory = Array.isArray(orderHistoryResponse?.orderHistory) ? orderHistoryResponse.orderHistory : [];
     totalConfirmedOrders = Number(orderHistoryResponse?.totalOrders ?? orderHistory.length) || orderHistory.length;
-    console.log("Order hit! order history:", orderHistory);
-  } catch (error) {
-    orderHistoryResponse = { success: false, error: error.message, status: error.status || 500 };
-    orderHistory = [];
-    totalConfirmedOrders = 0;
-    console.log("Order hit! order history:", []);
-  }
+  } catch {}
 
-  const stampsCount = totalConfirmedOrders;
-
-  // Step 2 — Inventory service
-  let listings = [];
   try {
     inventoryListings = await fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`);
     listings = Array.isArray(inventoryListings) ? inventoryListings : [];
-    console.log("Inventory hit! listings:", listings);
-  } catch (error) {
-    inventoryListings = { success: false, error: error.message, status: error.status || 500 };
-    listings = [];
-    console.log("Inventory hit! listings:", []);
-  }
+  } catch {}
+}
 
-  // Step 3 — Reward service
-  try {
-    const rewardPayload = await fetchJson(
-      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
-    );
-    rewardEligibility = parseRewardEligibility(rewardPayload, stampsCount);
-    console.log("Rewards hit! reward eligibility:", rewardEligibility.eligible);
-  } catch (error) {
-    rewardEligibility = { success: false, stampsCount, error: error.message, status: error.status || 500 };
-    console.log("Rewards hit! reward eligibility:", false);
-  }
+// IMPORTANT: define this
+const stampsCount = totalConfirmedOrders;
+
+// Step 3 — Reward service
+try {
+  const rewardPayload = await fetchJson(
+    `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
+  );
+  rewardEligibility = parseRewardEligibility(rewardPayload, stampsCount);
+  console.log("Rewards hit! reward eligibility:", rewardEligibility.eligible);
+} catch (error) {
+  rewardEligibility = { success: false, stampsCount, error: error.message, status: error.status || 500 };
+  console.log("Rewards hit! reward eligibility:", false);
+}
 
   const { topNames, topCategories } = pickTopSignals(orderHistory, maxSignals);
   console.log("Signals:", { topNames, topCategories });

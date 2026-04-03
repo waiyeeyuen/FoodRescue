@@ -160,7 +160,7 @@ app.get('/notifications/:user_id', async (req, res) => {
     if (isQuotaError(err)) {
       return res.json(getCachedNotifications(req.params.user_id) || []);
     }
-    console.error('[notifications/list] ❌ Error:', err.message);
+    console.error('[notifications/list] Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -197,7 +197,7 @@ app.patch('/notifications/:user_id/read-all', async (req, res) => {
     if (isQuotaError(err)) {
       return res.json({ success: true, updated: 0, stale: true });
     }
-    console.error('[notifications/read-all] ❌ Error:', err.message);
+    console.error('[notifications/read-all] Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -271,7 +271,7 @@ app.post('/notifications/send', async (req, res) => {
 
     if (resolvedChannel === 'SMS' && !resolvedPhone) {
       console.warn(
-        `[notifications/send] ⚠️ Missing destination phone for ${normalizedType}; storing in-app record only`
+        `[notifications/send] Missing destination phone for ${normalizedType}; storing in-app record only`
       );
     }
 
@@ -300,7 +300,7 @@ app.post('/notifications/send', async (req, res) => {
       reason: resolvedDelivery.preferenceReason,
     });
   } catch (err) {
-    console.error('[notifications/send] ❌ Error:', err.message);
+    console.error('[notifications/send] Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
