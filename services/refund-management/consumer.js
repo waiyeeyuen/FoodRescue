@@ -1,17 +1,14 @@
 import 'dotenv/config';
 import amqplib from 'amqplib';
-import Stripe from 'stripe';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
-const PLACE_ORDER_SERVICE_URL = process.env.PLACE_ORDER_SERVICE_URL || 'http://localhost:4001';
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 
 const QUEUE = 'order.error';
 const DLQ = 'order.error.dlq';
 const FAILURE_QUEUE = 'refund.failed';
 
 const MAX_RETRIES = 3;
-const stripe = new Stripe(STRIPE_SECRET_KEY);
 
 function publishToQueue(channel, queue, content, headers = {}) {
   channel.sendToQueue(queue, content, {
@@ -71,46 +68,15 @@ function buildRefundRequest(payload) {
   };
 }
 
-async function sendRefund({ paymentId, paymentIntentId, amount, reason }) {
-  if (!paymentIntentId) {
-    return {
-      ok: false,
-      status: 400,
-      text: 'Missing Stripe payment intent ID',
-    };
-  }
-
-  const refund = await stripe.refunds.create(
-    {
-      payment_intent: paymentIntentId,
-      ...(amount ? { amount } : {}),
-      ...(reason ? { metadata: { reason } } : {}),
-    },
-    {
-      idempotencyKey: `refund:${paymentId}:${amount || 0}:${reason || ''}`,
-    }
-  );
-
-  return {
-    ok: ['succeeded', 'pending'].includes(String(refund?.status || '').toLowerCase()),
-    status: 200,
-    refund,
-  };
-}
-
-async function notifyPlaceOrderRefund(payload) {
-  const res = await fetch(`${PLACE_ORDER_SERVICE_URL}/orders/refund-result`, {
+async function sendRefund({ paymentId, amount, reason }) {
+  const res = await fetch(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ amount, reason }),
   });
 
   const text = await res.text().catch(() => '');
-  if (!res.ok) {
-    throw new Error(`Place Order refund callback failed (${res.status}): ${text}`);
-  }
-
-  return text;
+  return { ok: res.ok, status: res.status, text };
 }
 
 function sendToDlq(channel, msg, reason) {
@@ -151,16 +117,9 @@ async function start() {
     }
 
     const paymentId = payload?.paymentId;
-    const paymentIntentId = payload?.paymentIntentId;
     if (!paymentId) {
       console.error('[refund-management] Missing paymentId; sending to DLQ');
       sendToDlq(channel, msg, 'missing_payment_id');
-      channel.ack(msg);
-      return;
-    }
-    if (!paymentIntentId) {
-      console.error('[refund-management] Missing paymentIntentId; sending to DLQ');
-      sendToDlq(channel, msg, 'missing_payment_intent_id');
       channel.ack(msg);
       return;
     }
@@ -172,23 +131,10 @@ async function start() {
     console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId}`);
 
     try {
-      const result = await sendRefund({ paymentId, paymentIntentId, amount, reason });
+      const result = await sendRefund({ paymentId, amount, reason });
 
       if (result.ok) {
         console.log('[refund-management] Refund successful');
-
-        await notifyPlaceOrderRefund({
-          orderId: payload.orderId,
-          paymentId,
-          userId: payload.userId,
-          status: payload.status,
-          confirmedItems: payload.confirmedItems || [],
-          insufficientItems: payload.insufficientItems || [],
-          refundAmount: amount,
-          refundId: result.refund?.id || '',
-          refundStatus: result.refund?.status || 'succeeded',
-        });
-
         channel.ack(msg);
         return;
       }

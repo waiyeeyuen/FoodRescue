@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { getChannel, publishToQueue, QUEUES } from "./rabbitmq.js";
 
 dotenv.config();
 
@@ -322,54 +321,6 @@ app.post("/orders/place", async (req, res) => {
   }
 });
 
-app.post("/orders/payment-confirmed", async (req, res) => {
-  const {
-    orderId,
-    paymentId,
-    paymentIntentId,
-    userId,
-    currency,
-    amountTotal,
-    items,
-  } = req.body || {};
-
-  if (!orderId || !paymentId || !userId) {
-    return res.status(400).json({ error: "orderId, paymentId, and userId are required" });
-  }
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: "items array is required" });
-  }
-
-  try {
-    const queuePayload = {
-      orderId,
-      paymentId,
-      paymentIntentId,
-      userId,
-      currency: currency || "sgd",
-      amountTotal,
-      items,
-    };
-
-    await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
-
-    console.log(`[place-order] ✅ Published stock check for order ${orderId}`);
-
-    return res.json({
-      success: true,
-      published: true,
-      queue: QUEUES.ORDER_STOCK_CHECK,
-      orderId,
-      paymentId,
-    });
-  } catch (error) {
-    console.error("[place-order] ❌ /orders/payment-confirmed error:", error.message);
-    return res.status(error.status || 500).json({
-      error: error.message || "Failed to dispatch stock check",
-    });
-  }
-});
-
 // Step 7 — Inventory consumer calls this after stock validation
 app.post("/orders/inventory-result", async (req, res) => {
   const {
@@ -473,14 +424,30 @@ app.post("/orders/inventory-result", async (req, res) => {
       // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
       await markRewardUsedIfNeeded(paymentId, orderId);
 
-      return res.json({ success: true, orderId, status: "partial_refund_pending" });
+      // Fire-and-forget notification
+      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+        userId,
+        type: "ORDER_PARTIAL",
+        orderId,
+        insufficientItems,
+      });
+
+      return res.json({ success: true, orderId, status: "partial" });
     }
 
     // ── FULL STOCK FAILURE ────────────────────────────────────────────────────
     if (status === "failed") {
       console.log(`[place-order] ❌ All items out of stock — full refund for order ${orderId}`);
       // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
-      return res.json({ success: true, orderId, status: "refund_pending" });
+
+      // Fire-and-forget notification
+      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+        userId,
+        type: "ORDER_REFUNDED",
+        orderId,
+      });
+
+      return res.json({ success: true, orderId, status: "refunded" });
     }
 
     // Unknown status
@@ -492,65 +459,6 @@ app.post("/orders/inventory-result", async (req, res) => {
   }
 });
 
-app.post("/orders/refund-result", async (req, res) => {
-  const {
-    orderId,
-    paymentId,
-    userId,
-    status,
-    insufficientItems,
-    refundAmount,
-    refundId,
-    refundStatus,
-  } = req.body || {};
-
-  if (!orderId || !paymentId || !userId || !status) {
-    return res.status(400).json({ error: "orderId, paymentId, userId, and status are required" });
-  }
-
-  const normalizedStatus = String(status).toLowerCase();
-  if (!["partial", "failed"].includes(normalizedStatus)) {
-    return res.status(400).json({ error: `Unsupported refund callback status: ${status}` });
-  }
-
-  const notificationType = normalizedStatus === "partial" ? "ORDER_PARTIAL" : "ORDER_REFUNDED";
-
-  try {
-    await fetchJson(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId,
-        type: notificationType,
-        orderId,
-        insufficientItems,
-        refundAmount,
-        refundId,
-        refundStatus,
-      }),
-    });
-
-    console.log(
-      `[place-order] 📨 ${notificationType} notification sent for ${userId} after refund ${refundId || "(no id)"} (${refundStatus || "unknown"})`
-    );
-
-    return res.json({
-      success: true,
-      orderId,
-      paymentId,
-      notificationType,
-      refundStatus: refundStatus || "unknown",
-    });
-  } catch (error) {
-    console.error("[place-order] ❌ /orders/refund-result error:", error.message);
-    return res.status(500).json({ error: error.message || "Failed to process refund result" });
-  }
-});
-
 app.listen(PORT, () => {
   console.log(`Composite place-order service running on port ${PORT}`);
 });
-
-getChannel()
-  .then(() => console.log("[place-order] RabbitMQ channel ready"))
-  .catch((err) => console.warn("[place-order] RabbitMQ channel not ready:", err?.message || err));

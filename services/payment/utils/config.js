@@ -19,6 +19,5 @@ export const config = {
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
   frontendSuccessUrl: process.env.FRONTEND_SUCCESS_URL,
   frontendCancelUrl: process.env.FRONTEND_CANCEL_URL,
-  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
-  placeOrderServiceUrl: process.env.PLACE_ORDER_SERVICE_URL || "http://localhost:4001",
+  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH
 };

@@ -67,8 +67,11 @@ services:
       dockerfile: services/payment/Dockerfile
     ports:
       - "3003:3003"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     environment:
-      PLACE_ORDER_SERVICE_URL: http://place-order:4001
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       PORT: 3003
     env_file:
       - ./services/payment/.env
@@ -160,13 +163,11 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      place-order:
+      payment:
         condition: service_started
     environment:
-      PLACE_ORDER_SERVICE_URL: http://place-order:4001
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-    env_file:
-      - ./services/payment/.env
+      PAYMENT_SERVICE_URL: http://payment:3003
 
   recommendation:
     build:

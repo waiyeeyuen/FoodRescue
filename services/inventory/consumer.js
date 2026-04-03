@@ -59,7 +59,7 @@ async function processMessage(channel, payload) {
   console.log('[Consumer] Raw payload:', JSON.stringify(payload, null, 2));
   console.log('==============================');
 
-  const { orderId, paymentId, paymentIntentId, userId, items, amountTotal, currency } = payload;
+  const { orderId, paymentId, userId, items, amountTotal, currency } = payload;
 
   const insufficientItems = [];
   const confirmedItems = [];
@@ -139,7 +139,6 @@ async function processMessage(channel, payload) {
         type: 'inventory_conflict',
         orderId,
         paymentId,
-        paymentIntentId,
         userId,
         currency,
         amountTotal,
