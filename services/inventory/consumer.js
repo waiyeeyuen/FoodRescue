@@ -2,14 +2,13 @@ import 'dotenv/config';
 import amqplib from 'amqplib';
 
 const RABBITMQ_URL         = process.env.RABBITMQ_URL             || 'amqp://guest:guest@localhost:5672';
-const PLACE_ORDER_URL      = process.env.PLACE_ORDER_SERVICE_URL  || 'http://localhost:4001';
 const OUTSYSTEMS_BASE      = String(process.env.OUTSYSTEMS_INVENTORY_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 
-const QUEUE = 'order.stock_check';
-const DLQ = 'order.stock_check.dlq';
-const ERROR_QUEUE = 'order.error';
+const QUEUE = 'inventory.check';
+const DLQ = 'inventory.check.dlq';
+const RESULT_QUEUE = 'inventory.result';
 
 function getOutSystemsBaseUrl() {
   if (!OUTSYSTEMS_BASE) {
@@ -59,7 +58,17 @@ async function processMessage(channel, payload) {
   console.log('[Consumer] Raw payload:', JSON.stringify(payload, null, 2));
   console.log('==============================');
 
-  const { orderId, paymentId, userId, items, amountTotal, currency } = payload;
+  const {
+    orderId,
+    paymentId,
+    paymentIntentId,
+    userId,
+    items,
+    amountTotal,
+    currency,
+    correlationId,
+    replyTo,
+  } = payload;
 
   const insufficientItems = [];
   const confirmedItems = [];
@@ -133,56 +142,30 @@ async function processMessage(channel, payload) {
 
   console.log(`[Consumer] Stock check complete — status: ${status}`);
 
-  if (status !== 'ok') {
-    try {
-      const errorPayload = {
-        type: 'inventory_conflict',
-        orderId,
-        paymentId,
-        userId,
-        currency,
-        amountTotal,
-        status,
-        confirmedItems,
-        insufficientItems,
-        refundAmount,
-        occurredAt: new Date().toISOString(),
-      };
+  const resultPayload = {
+    orderId,
+    paymentId,
+    paymentIntentId: paymentIntentId || null,
+    userId,
+    currency,
+    status,
+    confirmedItems,
+    insufficientItems,
+    refundAmount,
+    amountTotal,
+    correlationId: correlationId || null,
+  };
 
-      channel.sendToQueue(ERROR_QUEUE, Buffer.from(JSON.stringify(errorPayload)), {
-        persistent: true,
-        contentType: 'application/json',
-      });
-
-      console.log(`[Consumer] Published to ${ERROR_QUEUE}`);
-    } catch (err) {
-      console.error('[Consumer] ❌ Failed to publish to order.error:', err?.message || err);
+  channel.sendToQueue(
+    replyTo || RESULT_QUEUE,
+    Buffer.from(JSON.stringify(resultPayload)),
+    {
+      persistent: true,
+      contentType: 'application/json',
     }
-  }
+  );
 
-  // Single delegating call to Place Order orchestrator
-  const res = await fetch(`${PLACE_ORDER_URL}/orders/inventory-result`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      orderId,
-      paymentId,
-      userId,
-      currency,
-      status,
-      confirmedItems,
-      insufficientItems,
-      refundAmount,
-      amountTotal,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Place Order responded ${res.status}: ${errText}`);
-  }
-
-  console.log(`[Consumer] ✅ Place Order notified — order ${orderId} status: ${status}`);
+  console.log(`[Consumer] ✅ Published inventory result for order ${orderId} to ${replyTo || RESULT_QUEUE}`);
 }
 
 async function startConsumer() {
@@ -202,12 +185,12 @@ async function startConsumer() {
   const channel = await connection.createChannel();
   await channel.assertQueue(QUEUE, { durable: true });
   await channel.assertQueue(DLQ, { durable: true });
-  await channel.assertQueue(ERROR_QUEUE, { durable: true });
+  await channel.assertQueue(RESULT_QUEUE, { durable: true });
   channel.prefetch(1);
 
   console.log(`[Consumer] ✅ Listening on queue: ${QUEUE}`);
   console.log(`[Consumer] DLQ enabled: ${DLQ}`);
-  console.log(`[Consumer] Error queue enabled: ${ERROR_QUEUE}`);
+  console.log(`[Consumer] Result queue enabled: ${RESULT_QUEUE}`);
 
   channel.consume(QUEUE, async (msg) => {
     if (!msg) return;

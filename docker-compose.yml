@@ -67,11 +67,8 @@ services:
       dockerfile: services/payment/Dockerfile
     ports:
       - "3003:3003"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PLACE_ORDER_SERVICE_URL: http://place-order:4001
       PORT: 3003
     env_file:
       - ./services/payment/.env
@@ -88,7 +85,6 @@ services:
     environment:
       OUTSYSTEMS_INVENTORY_BASE_URL: ${OUTSYSTEMS_INVENTORY_BASE_URL:-https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      PLACE_ORDER_SERVICE_URL: http://place-order:4001
     env_file:
       - ./services/inventory/.env
     command: ["npm", "run", "consumer"]
@@ -257,6 +253,7 @@ services:
       VITE_PAYMENT_SERVICE_URL: http://localhost:8000
       VITE_NOTIFICATION_SERVICE_URL: http://localhost:8000
       VITE_DELETE_LISTING_SERVICE_URL: http://localhost:8000
+      VITE_UPLOAD_LISTING_SERVICE_URL: http://localhost:8000
       VITE_S3_BUCKET: foodrescue-listing-292659698564-ap-southeast-1-an
       VITE_AWS_REGION: ap-southeast-1
     depends_on:

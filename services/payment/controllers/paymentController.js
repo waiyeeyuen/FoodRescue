@@ -6,10 +6,29 @@ import {
 } from "../services/paymentRepository.js";
 import { createStripeCheckoutSession, createStripeRefund, stripe } from "../services/stripeService.js";
 import { config } from "../utils/config.js";
-import { publishToQueue, QUEUES } from "../utils/rabbitmq.js";
+
+const PLACE_ORDER_SERVICE_URL = process.env.PLACE_ORDER_SERVICE_URL || "http://localhost:4001";
 
 function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
+}
+
+async function readBody(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  if (!raw) return null;
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function hasRefundState(payment) {
@@ -225,17 +244,23 @@ export async function logPayment(req, res) {
   }
 }
 
-async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session }) {
-  if (!paymentId || !orderId) return { published: false, reason: 'missing_data' };
+async function notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session }) {
+  if (!paymentId || !orderId) return { notified: false, reason: 'missing_data' };
 
-  if (paymentRecord?.stockCheckPublishedAt || paymentRecord?.stockCheckPublished) {
-    console.log('[Payment] Stock check already published for paymentId:', paymentId);
-    return { published: false, reason: 'already_published' };
+  if (
+    paymentRecord?.placeOrderNotifiedAt ||
+    paymentRecord?.placeOrderNotified ||
+    paymentRecord?.stockCheckPublishedAt ||
+    paymentRecord?.stockCheckPublished
+  ) {
+    console.log('[Payment] Place Order already notified for paymentId:', paymentId);
+    return { notified: false, reason: 'already_notified' };
   }
 
   let items = Array.isArray(paymentRecord?.items) ? paymentRecord.items : [];
   let amountTotal = Number(paymentRecord?.amountTotal ?? NaN);
   let currency = paymentRecord?.currency;
+  let paymentIntentId = session?.payment_intent || paymentRecord?.stripePaymentIntentId || null;
 
   if ((!items || items.length === 0) && session?.id) {
     try {
@@ -244,6 +269,7 @@ async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRe
         ? amountTotal
         : Number(session.amount_total ?? calculateAmountTotal(items));
       currency = currency || session.currency;
+      paymentIntentId = paymentIntentId || session.payment_intent || null;
       console.warn('[Payment] Payment record missing items; falling back to Stripe line_items.');
     } catch (err) {
       console.error('[Payment] ❌ Failed to fetch Stripe line_items:', err?.message || err);
@@ -251,37 +277,55 @@ async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRe
   }
 
   if (!Array.isArray(items) || items.length === 0) {
-    console.error('[Payment] ❌ Cannot publish stock check: missing items');
-    return { published: false, reason: 'missing_items' };
+    console.error('[Payment] ❌ Cannot notify Place Order: missing items');
+    return { notified: false, reason: 'missing_items' };
   }
 
   if (!Number.isFinite(amountTotal)) {
     amountTotal = calculateAmountTotal(items);
   }
 
-  const queuePayload = {
+  const requestPayload = {
     orderId,
     paymentId,
+    paymentIntentId,
     userId,
     currency: currency || 'sgd',
     amountTotal,
     items,
   };
 
-  console.log('[Payment] Publishing stock check to queue:', JSON.stringify(queuePayload, null, 2));
-  await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+  console.log('[Payment] Notifying Place Order:', JSON.stringify(requestPayload, null, 2));
+  const response = await fetch(`${PLACE_ORDER_SERVICE_URL}/orders/payment-confirmed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestPayload),
+  });
+  const responseBody = await readBody(response);
+
+  if (!response.ok) {
+    const error = new Error(
+      (responseBody && responseBody.error) || `Place Order responded ${response.status}`
+    );
+    error.status = response.status;
+    error.data = responseBody;
+    throw error;
+  }
 
   const paymentUpdates = {
-    stockCheckPublished: true,
-    stockCheckPublishedAt: admin.firestore.FieldValue.serverTimestamp(),
+    placeOrderNotified: true,
+    placeOrderNotifiedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
   if (!paymentRecord?.items || paymentRecord.items.length === 0) paymentUpdates.items = items;
   if (paymentRecord?.amountTotal == null) paymentUpdates.amountTotal = amountTotal;
   if (!paymentRecord?.currency && currency) paymentUpdates.currency = currency;
+  if (!paymentRecord?.stripePaymentIntentId && paymentIntentId) {
+    paymentUpdates.stripePaymentIntentId = paymentIntentId;
+  }
 
   await createOrUpdatePayment(paymentId, paymentUpdates);
 
-  return { published: true };
+  return { notified: true };
 }
 
 export async function confirmCheckoutSession(req, res) {
@@ -332,10 +376,10 @@ export async function confirmCheckoutSession(req, res) {
     }
 
     const paymentRecord = await retryGetPayment(paymentId);
-    const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+    const result = await notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
 
-    if (!result.published && result.reason !== 'already_published') {
-      return res.status(500).json({ error: 'Failed to publish stock check', reason: result.reason });
+    if (!result.notified && result.reason !== 'already_notified') {
+      return res.status(500).json({ error: 'Failed to notify place-order', reason: result.reason });
     }
 
     return res.json({
@@ -410,21 +454,21 @@ export async function handleStripeWebhook(req, res) {
 
         if (orderId) {
           try {
-            const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
-            if (result.published) {
-              console.log('[Webhook] ✅ Published stock check to RabbitMQ');
+            const result = await notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+            if (result.notified) {
+              console.log('[Webhook] ✅ Place Order notified');
             } else {
-              console.log('[Webhook] Skipped stock check publish:', result.reason);
-              if (result.reason !== 'already_published') {
-                throw new Error(`stock_check_publish_${result.reason}`);
+              console.log('[Webhook] Skipped Place Order notification:', result.reason);
+              if (result.reason !== 'already_notified') {
+                throw new Error(`place_order_notify_${result.reason}`);
               }
             }
           } catch (err) {
-            console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
+            console.error('[Webhook] ❌ Place Order notification failed:', err);
             throw err;
           }
         } else {
-          console.log('[Webhook] ❌ Skipped RabbitMQ publish');
+          console.log('[Webhook] ❌ Skipped Place Order notification');
           console.log('[Webhook]    orderId:', orderId);
           console.log('[Webhook]    paymentRecord exists:', !!paymentRecord);
         }

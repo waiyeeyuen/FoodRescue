@@ -25,3 +25,6 @@ export const NOTIFICATION_SERVICE_URL = withGatewayFallback(
 export const DELETE_LISTING_SERVICE_URL = withGatewayFallback(
   import.meta.env.VITE_DELETE_LISTING_SERVICE_URL
 );
+export const UPLOAD_LISTING_SERVICE_URL = withGatewayFallback(
+  import.meta.env.VITE_UPLOAD_LISTING_SERVICE_URL
+);

@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import amqplib from "amqplib";
 
 dotenv.config();
 
@@ -10,10 +11,20 @@ const PORT = process.env.PORT || 4001;
 const PAYMENT_SERVICE_URL     = process.env.PAYMENT_SERVICE_URL     || "http://localhost:3003";
 const ORDER_SERVICE_URL        = process.env.ORDER_SERVICE_URL        || "http://localhost:3004";
 const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
-const INVENTORY_SERVICE_URL    = process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
 const REWARD_SERVICE_URL       = process.env.REWARD_SERVICE_URL       || "http://localhost:3005";
+const RABBITMQ_URL             = process.env.RABBITMQ_URL             || "amqp://guest:guest@localhost:5672";
 const REWARD_STAMP_TARGET = 5;
 const REWARD_DISCOUNT_PERCENT = 20;
+
+const QUEUES = {
+  INVENTORY_CHECK: "inventory.check",
+  INVENTORY_RESULT: "inventory.result",
+  REFUND_REQUEST: "refund.request",
+  REFUND_RESULT: "refund.result",
+};
+
+let rabbitConnection = null;
+let rabbitChannel = null;
 
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
   .split(",").map((v) => v.trim()).filter(Boolean);
@@ -45,6 +56,56 @@ async function fetchJson(url, options) {
   return data;
 }
 
+async function connectRabbitWithRetry() {
+  while (true) {
+    try {
+      const connection = await amqplib.connect(RABBITMQ_URL);
+      connection.on("error", (error) => {
+        console.error("[place-order] RabbitMQ connection error:", error?.message || error);
+      });
+      connection.on("close", () => {
+        console.warn("[place-order] RabbitMQ connection closed");
+        rabbitConnection = null;
+        rabbitChannel = null;
+        startRabbitConsumers().catch((error) => {
+          console.error("[place-order] RabbitMQ reconnect failed:", error?.message || error);
+        });
+      });
+      return connection;
+    } catch (error) {
+      console.log("[place-order] RabbitMQ not ready, retrying in 3s...");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
+}
+
+async function getRabbitChannel() {
+  if (rabbitChannel) return rabbitChannel;
+
+  rabbitConnection = rabbitConnection || (await connectRabbitWithRetry());
+  rabbitChannel = await rabbitConnection.createChannel();
+
+  await rabbitChannel.assertQueue(QUEUES.INVENTORY_CHECK, { durable: true });
+  await rabbitChannel.assertQueue(QUEUES.INVENTORY_RESULT, { durable: true });
+  await rabbitChannel.assertQueue(QUEUES.REFUND_REQUEST, { durable: true });
+  await rabbitChannel.assertQueue(QUEUES.REFUND_RESULT, { durable: true });
+
+  return rabbitChannel;
+}
+
+function buildCorrelationId(prefix, orderId) {
+  return `${prefix}:${String(orderId || "").trim()}:${Date.now()}`;
+}
+
+async function publishToQueue(queue, payload) {
+  const channel = await getRabbitChannel();
+  channel.sendToQueue(queue, Buffer.from(JSON.stringify(payload)), {
+    persistent: true,
+    contentType: "application/json",
+  });
+  console.log(`[place-order] Published to ${queue}:`, JSON.stringify(payload, null, 2));
+}
+
 // Fire-and-forget — never throws, never blocks
 function fireAndForget(url, body) {
   fetch(url, {
@@ -52,32 +113,6 @@ function fireAndForget(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).catch((err) => console.warn(`[fire-and-forget] ${url} failed:`, err.message));
-}
-
-// Decrement OutSystems inventory for confirmed items — fire-and-forget
-function decrementOutSystemsInventory(items) {
-  if (!Array.isArray(items) || items.length === 0) return;
-
-  items.forEach((item) => {
-    const itemId = item?.itemId || item?.listingId || item?.id;
-    const boughtQuantity = Number(item?.quantity) || 1;
-    
-    if (!itemId) {
-      console.warn(`[place-order] ⚠️ Skipping decrement — missing itemId for:`, item.name);
-      return;
-    }
-
-    const url = `${INVENTORY_SERVICE_URL}/DecrementListingCount?itemId=${encodeURIComponent(itemId)}&boughtQuantity=${boughtQuantity}`;
-    fetch(url, { method: "PUT" })
-      .then((res) => {
-        if (!res.ok) {
-          console.warn(`[place-order] ⚠️ Inventory decrement failed (${res.status}) for itemId: ${itemId}, quantity: ${boughtQuantity}`);
-        } else {
-          console.log(`[place-order] ✅ Inventory inventory decremented for itemId: ${itemId}, quantity: ${boughtQuantity}`);
-        }
-      })
-      .catch((err) => console.warn(`[place-order] ⚠️ Inventory decrement error for itemId ${itemId}:`, err.message));
-  });
 }
 
 function toMinorUnits(value) {
@@ -321,142 +356,319 @@ app.post("/orders/place", async (req, res) => {
   }
 });
 
-// Step 7 — Inventory consumer calls this after stock validation
-app.post("/orders/inventory-result", async (req, res) => {
+async function requestInventoryCheck({
+  orderId,
+  paymentId,
+  paymentIntentId,
+  userId,
+  currency,
+  amountTotal,
+  items,
+}) {
+  const correlationId = buildCorrelationId("inventory", orderId);
+  await publishToQueue(QUEUES.INVENTORY_CHECK, {
+    orderId,
+    paymentId,
+    paymentIntentId: paymentIntentId || null,
+    userId,
+    currency: currency || "sgd",
+    amountTotal,
+    items,
+    correlationId,
+    replyTo: QUEUES.INVENTORY_RESULT,
+  });
+  return correlationId;
+}
+
+async function requestRefund({
+  orderId,
+  paymentId,
+  userId,
+  currency,
+  status,
+  confirmedItems,
+  insufficientItems,
+  refundAmount,
+  amountTotal,
+}) {
+  const correlationId = buildCorrelationId("refund", orderId);
+  await publishToQueue(QUEUES.REFUND_REQUEST, {
+    orderId,
+    paymentId,
+    userId,
+    currency: currency || "sgd",
+    status,
+    confirmedItems: Array.isArray(confirmedItems) ? confirmedItems : [],
+    insufficientItems: Array.isArray(insufficientItems) ? insufficientItems : [],
+    refundAmount,
+    amountTotal,
+    correlationId,
+    replyTo: QUEUES.REFUND_RESULT,
+  });
+  return correlationId;
+}
+
+async function processInventoryResultMessage(payload) {
   const {
     orderId,
     paymentId,
     userId,
     currency,
-    status,           // "ok" | "partial" | "failed"
+    status,
     confirmedItems,
     insufficientItems,
     refundAmount,
     amountTotal,
-  } = req.body || {};
+  } = payload || {};
 
   console.log(`[place-order] 📦 Inventory result received for order ${orderId} — status: ${status}`);
-  console.log(`[place-order] Payload:`, JSON.stringify(req.body, null, 2)); 
+  console.log(`[place-order] Payload:`, JSON.stringify(payload, null, 2));
 
   if (!orderId || !paymentId || !userId || !status) {
-    return res.status(400).json({ error: "orderId, paymentId, userId, and status are required" });
+    throw new Error("orderId, paymentId, userId, and status are required");
   }
 
+  if (status === "ok") {
+    const totalPrice = (confirmedItems || []).reduce(
+      (sum, item) => sum + (Number(item.unitAmount) / 100) * Number(item.quantity),
+      0
+    );
+
+    console.log(`[place-order] Creating confirmed order ${orderId}`);
+    const orderRes = await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderId,
+        customerId: userId,
+        items: confirmedItems,
+        totalPrice: Number(totalPrice.toFixed(2)),
+        currency: currency || "sgd",
+        status: "confirmed",
+      }),
+    });
+    console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
+
+    try {
+      await fetchJson(`${PAYMENT_SERVICE_URL}/payments/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId,
+          paymentId,
+          amount: amountTotal,
+          status: "completed",
+        }),
+      });
+      console.log(`[place-order] ✅ Payment logged for order ${orderId}`);
+    } catch (error) {
+      console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, error.message);
+    }
+
+    await markRewardUsedIfNeeded(paymentId, orderId);
+
+    fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+      userId,
+      type: "ORDER_CONFIRMED",
+      orderId,
+    });
+    console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId}`);
+    return;
+  }
+
+  if (status === "partial") {
+    const partialTotal = (confirmedItems || []).reduce(
+      (sum, item) => sum + (Number(item.unitAmount) / 100) * Number(item.quantity),
+      0
+    );
+
+    console.log(`[place-order] Creating partial order ${orderId}`);
+    await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderId,
+        customerId: userId,
+        items: confirmedItems,
+        totalPrice: Number(partialTotal.toFixed(2)),
+        currency: currency || "sgd",
+        status: "confirmed",
+        notes: `Partial order — out of stock: ${(insufficientItems || [])
+          .map((item) => item.name)
+          .join(", ")}`,
+      }),
+    });
+    console.log(`[place-order] ✅ Partial order created`);
+
+    await markRewardUsedIfNeeded(paymentId, orderId);
+    await requestRefund({
+      orderId,
+      paymentId,
+      userId,
+      currency,
+      status,
+      confirmedItems,
+      insufficientItems,
+      refundAmount,
+      amountTotal,
+    });
+    return;
+  }
+
+  if (status === "failed") {
+    console.log(`[place-order] ❌ All items out of stock — requesting full refund for order ${orderId}`);
+    await requestRefund({
+      orderId,
+      paymentId,
+      userId,
+      currency,
+      status,
+      confirmedItems,
+      insufficientItems,
+      refundAmount,
+      amountTotal,
+    });
+    return;
+  }
+
+  throw new Error(`Unknown inventory status: ${status}`);
+}
+
+async function processRefundResultMessage(payload) {
+  const {
+    orderId,
+    userId,
+    status,
+    refundAmount,
+    refundId,
+    refundStatus,
+    insufficientItems,
+  } = payload || {};
+
+  console.log(`[place-order] 💸 Refund result received for order ${orderId} — status: ${refundStatus}`);
+  console.log(`[place-order] Payload:`, JSON.stringify(payload, null, 2));
+
+  if (!orderId || !userId || !status) {
+    throw new Error("orderId, userId, and status are required");
+  }
+
+  const normalizedRefundStatus = String(refundStatus || "").toLowerCase();
+  if (!["succeeded", "success", "completed"].includes(normalizedRefundStatus)) {
+    console.warn(`[place-order] Refund not successful for order ${orderId}: ${refundStatus || "unknown"}`);
+    return;
+  }
+
+  if (status === "partial") {
+    fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+      userId,
+      type: "ORDER_PARTIAL",
+      orderId,
+      insufficientItems,
+      refundAmount,
+      refundId,
+      refundStatus,
+    });
+    console.log(`[place-order] 📨 ORDER_PARTIAL notification fired for ${userId}`);
+    return;
+  }
+
+  if (status === "failed") {
+    fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+      userId,
+      type: "ORDER_REFUNDED",
+      orderId,
+      refundAmount,
+      refundId,
+      refundStatus,
+    });
+    console.log(`[place-order] 📨 ORDER_REFUNDED notification fired for ${userId}`);
+    return;
+  }
+
+  console.warn(`[place-order] Ignoring refund result with unsupported status: ${status}`);
+}
+
+app.post("/orders/payment-confirmed", async (req, res) => {
   try {
+    const {
+      orderId,
+      paymentId,
+      paymentIntentId,
+      userId,
+      currency,
+      amountTotal,
+      items,
+    } = req.body || {};
 
-    // ── HAPPY PATH — all items available ─────────────────────────────────────
-    if (status === "ok") {
-      const totalPrice = (confirmedItems || []).reduce(
-        (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
-      );
-
-      // Step 7a — Create order
-      console.log(`[place-order] Creating confirmed order ${orderId}`);
-      const orderRes = await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId,
-          customerId: userId,
-          items: confirmedItems,
-          totalPrice: Number(totalPrice.toFixed(2)),
-          currency: currency || "sgd",
-          status: "confirmed",
-        }),
-      });
-      console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
-
-      // Inventory decrement happens in the inventory consumer as part of stock-check processing.
-
-      // Step 9 — Log payment details to Payment Service
-      try {
-        await fetchJson(`${PAYMENT_SERVICE_URL}/payments/log`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            orderId,
-            paymentId,
-            amount: amountTotal,
-            status: "completed",
-          }),
-        });
-        console.log(`[place-order] ✅ Payment logged for order ${orderId}`);
-      } catch (err) {
-        console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, err.message);
-      }
-
-      await markRewardUsedIfNeeded(paymentId, orderId);
-
-      // Step 10 — Fire-and-forget notification
-      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
-        userId,
-        type: "ORDER_CONFIRMED",
-        orderId,
-      });
-      console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId}`);
-
-      return res.json({ success: true, orderId, status: "confirmed" });
+    if (!orderId || !paymentId || !userId) {
+      return res.status(400).json({ error: "orderId, paymentId, and userId are required" });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "items array is required" });
     }
 
-    // ── PARTIAL STOCK FAILURE ─────────────────────────────────────────────────
-    if (status === "partial") {
-      const partialTotal = (confirmedItems || []).reduce(
-        (sum, i) => sum + (Number(i.unitAmount) / 100) * Number(i.quantity), 0
-      );
+    const correlationId = await requestInventoryCheck({
+      orderId,
+      paymentId,
+      paymentIntentId,
+      userId,
+      currency,
+      amountTotal,
+      items,
+    });
 
-      // Create order for confirmed items only
-      console.log(`[place-order] Creating partial order ${orderId}`);
-      await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId,
-          customerId: userId,
-          items: confirmedItems,
-          totalPrice: Number(partialTotal.toFixed(2)),
-          currency: currency || "sgd",
-          status: "confirmed",
-          notes: `Partial order — out of stock: ${(insufficientItems || []).map(i => i.name).join(", ")}`,
-        }),
-      });
-      console.log(`[place-order] ✅ Partial order created`);
-
-      // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
-      await markRewardUsedIfNeeded(paymentId, orderId);
-
-      // Fire-and-forget notification
-      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
-        userId,
-        type: "ORDER_PARTIAL",
-        orderId,
-        insufficientItems,
-      });
-
-      return res.json({ success: true, orderId, status: "partial" });
-    }
-
-    // ── FULL STOCK FAILURE ────────────────────────────────────────────────────
-    if (status === "failed") {
-      console.log(`[place-order] ❌ All items out of stock — full refund for order ${orderId}`);
-      // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
-
-      // Fire-and-forget notification
-      fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
-        userId,
-        type: "ORDER_REFUNDED",
-        orderId,
-      });
-
-      return res.json({ success: true, orderId, status: "refunded" });
-    }
-
-    // Unknown status
-    return res.status(400).json({ error: `Unknown status: ${status}` });
-
+    return res.json({
+      success: true,
+      orderId,
+      paymentId,
+      queued: true,
+      correlationId,
+    });
   } catch (error) {
-    console.error("[place-order] ❌ /orders/inventory-result error:", error.message);
-    res.status(500).json({ error: error.message || "Orchestration failed" });
+    console.error("[place-order] ❌ /orders/payment-confirmed error:", error.message);
+    return res.status(error.status || 500).json({
+      error: error.message || "Failed to queue inventory check",
+    });
   }
+});
+
+async function startRabbitConsumers() {
+  const channel = await getRabbitChannel();
+  channel.prefetch(5);
+
+  await channel.consume(QUEUES.INVENTORY_RESULT, async (msg) => {
+    if (!msg) return;
+
+    try {
+      const payload = JSON.parse(msg.content.toString());
+      await processInventoryResultMessage(payload);
+      channel.ack(msg);
+    } catch (error) {
+      console.error("[place-order] ❌ inventory.result processing failed:", error?.message || error);
+      channel.nack(msg, false, true);
+    }
+  });
+
+  await channel.consume(QUEUES.REFUND_RESULT, async (msg) => {
+    if (!msg) return;
+
+    try {
+      const payload = JSON.parse(msg.content.toString());
+      await processRefundResultMessage(payload);
+      channel.ack(msg);
+    } catch (error) {
+      console.error("[place-order] ❌ refund.result processing failed:", error?.message || error);
+      channel.nack(msg, false, true);
+    }
+  });
+
+  console.log(
+    `[place-order] RabbitMQ consumers ready on ${QUEUES.INVENTORY_RESULT} and ${QUEUES.REFUND_RESULT}`
+  );
+}
+
+startRabbitConsumers().catch((error) => {
+  console.error("[place-order] RabbitMQ startup failed:", error?.message || error);
 });
 
 app.listen(PORT, () => {

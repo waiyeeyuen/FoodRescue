@@ -64,10 +64,57 @@ async function proxyCreateListing(req, res) {
   }
 }
 
+async function proxyGetRestaurantListings(req, res) {
+  try {
+    const response = await fetch(
+      `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(
+        req.params.restaurantId
+      )}`
+    );
+    const body = await readBody(response);
+    res.status(response.status).json(body);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to fetch listings" });
+  }
+}
+
+async function proxyGetDeletedRestaurantListings(req, res) {
+  try {
+    const response = await fetch(
+      `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(
+        req.params.restaurantId
+      )}/deleted`
+    );
+    const body = await readBody(response);
+    res.status(response.status).json(body);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to fetch deleted listings" });
+  }
+}
+
+async function proxyUploadImage(req, res) {
+  try {
+    const contentType = req.headers["content-type"] || "";
+    const response = await fetch(`${INVENTORY_SERVICE_URL}/inventory/upload-image`, {
+      method: "POST",
+      headers: contentType ? { "Content-Type": contentType } : undefined,
+      body: req,
+      duplex: "half",
+    });
+
+    const body = await readBody(response);
+    res.status(response.status).json(body);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Failed to upload image" });
+  }
+}
+
 app.post("/listings", proxyCreateListing);
 app.post("/listings/upload", proxyCreateListing);
+app.post("/listings/upload-image", proxyUploadImage);
+app.get("/listings/restaurant/:restaurantId", proxyGetRestaurantListings);
+app.get("/listings/restaurant/:restaurantId/deleted", proxyGetDeletedRestaurantListings);
 
 app.listen(PORT, () => {
   console.log(`Composite upload-listing service running on port ${PORT}`);
 });
-

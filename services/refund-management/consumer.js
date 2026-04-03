@@ -4,10 +4,10 @@ import amqplib from 'amqplib';
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
 const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
 
-const QUEUE = 'order.error';
-const DLQ = 'order.error.dlq';
+const QUEUE = 'refund.request';
+const DLQ = 'refund.request.dlq';
+const RESULT_QUEUE = 'refund.result';
 const FAILURE_QUEUE = 'refund.failed';
-
 const MAX_RETRIES = 3;
 
 function publishToQueue(channel, queue, content, headers = {}) {
@@ -32,12 +32,14 @@ async function connectWithRetry(retries = 20, delayMs = 1000) {
   let lastError;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      console.log(`[refund-management] Connecting to RabbitMQ ${maskUrl(RABBITMQ_URL)} (attempt ${attempt}/${retries})`);
+      console.log(
+        `[refund-management] Connecting to RabbitMQ ${maskUrl(RABBITMQ_URL)} (attempt ${attempt}/${retries})`
+      );
       return await amqplib.connect(RABBITMQ_URL);
-    } catch (err) {
-      lastError = err;
+    } catch (error) {
+      lastError = error;
       console.log('[refund-management] RabbitMQ not ready, retrying...');
-      await new Promise((r) => setTimeout(r, delayMs));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
   throw lastError;
@@ -49,7 +51,7 @@ function buildRefundRequest(payload) {
   const refundAmount = Number(payload?.refundAmount ?? 0);
 
   const insufficientItems = Array.isArray(payload?.insufficientItems) ? payload.insufficientItems : [];
-  const itemNames = insufficientItems.map((i) => i?.name).filter(Boolean);
+  const itemNames = insufficientItems.map((item) => item?.name).filter(Boolean);
 
   if (status === 'failed') {
     return {
@@ -69,14 +71,26 @@ function buildRefundRequest(payload) {
 }
 
 async function sendRefund({ paymentId, amount, reason }) {
-  const res = await fetch(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`, {
+  const response = await fetch(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ amount, reason }),
   });
 
-  const text = await res.text().catch(() => '');
-  return { ok: res.ok, status: res.status, text };
+  const text = await response.text().catch(() => '');
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    text,
+    data,
+  };
 }
 
 function sendToDlq(channel, msg, reason) {
@@ -87,20 +101,37 @@ function sendToDlq(channel, msg, reason) {
   });
 }
 
+function publishRefundResult(channel, payload, override = {}) {
+  const responseQueue = payload?.replyTo || RESULT_QUEUE;
+  const resultPayload = {
+    orderId: payload?.orderId || '',
+    paymentId: payload?.paymentId || '',
+    userId: payload?.userId || '',
+    status: payload?.status || '',
+    insufficientItems: Array.isArray(payload?.insufficientItems) ? payload.insufficientItems : [],
+    refundAmount: Number(payload?.refundAmount ?? payload?.amountTotal ?? 0) || 0,
+    refundId: '',
+    refundStatus: 'failed',
+    correlationId: payload?.correlationId || null,
+    ...override,
+  };
+
+  publishToQueue(channel, responseQueue, Buffer.from(JSON.stringify(resultPayload)));
+}
+
 async function start() {
   const connection = await connectWithRetry();
   const channel = await connection.createChannel();
 
-  await channel.assertQueue(DLQ, { durable: true });
   await channel.assertQueue(QUEUE, { durable: true });
-
-  // Failure queue (NEW)
+  await channel.assertQueue(DLQ, { durable: true });
+  await channel.assertQueue(RESULT_QUEUE, { durable: true });
   await channel.assertQueue(FAILURE_QUEUE, { durable: true });
-
   channel.prefetch(1);
 
   console.log(`[refund-management] Listening on queue: ${QUEUE}`);
   console.log(`[refund-management] DLQ (invalid messages): ${DLQ}`);
+  console.log(`[refund-management] Result queue: ${RESULT_QUEUE}`);
   console.log(`[refund-management] Failure queue (retry exhausted): ${FAILURE_QUEUE}`);
 
   channel.consume(QUEUE, async (msg) => {
@@ -125,7 +156,6 @@ async function start() {
     }
 
     const retryCount = msg.properties.headers?.['x-retry-count'] || 0;
-
     const { amount, reason } = buildRefundRequest(payload);
 
     console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId}`);
@@ -135,41 +165,50 @@ async function start() {
 
       if (result.ok) {
         console.log('[refund-management] Refund successful');
+        publishRefundResult(channel, payload, {
+          refundId: result.data?.payment?.refundId || '',
+          refundStatus:
+            result.data?.payment?.refundStatus ||
+            result.data?.payment?.status ||
+            'succeeded',
+        });
         channel.ack(msg);
         return;
       }
 
-      // Business failure (4xx) → do not retry
       if (result.status >= 400 && result.status < 500) {
         console.warn('[refund-management] Business failure (ack):', result.status, result.text);
+        publishRefundResult(channel, payload, {
+          refundStatus: 'failed',
+          error: String(result.text || '').slice(0, 1000),
+        });
         channel.ack(msg);
         return;
       }
 
-      // System failure (5xx) → retry logic
       if (retryCount < MAX_RETRIES) {
         console.warn(`[refund-management] Retry ${retryCount + 1}/${MAX_RETRIES}`);
-
         publishToQueue(channel, QUEUE, msg.content, {
           ...msg.properties.headers,
           'x-retry-count': retryCount + 1,
         });
-
       } else {
         console.error('[refund-management] Max retries reached → sending to failure queue');
-
         publishToQueue(channel, FAILURE_QUEUE, msg.content, {
           ...msg.properties.headers,
           'x-retry-count': retryCount,
           'x-error': `refund_failed_${result.status}`,
           'x-response': String(result.text || '').slice(0, 1000),
         });
+        publishRefundResult(channel, payload, {
+          refundStatus: 'failed',
+          error: `refund_failed_${result.status}`,
+        });
       }
 
       channel.ack(msg);
-
-    } catch (err) {
-      console.error('[refund-management] Network/system error:', err?.message);
+    } catch (error) {
+      console.error('[refund-management] Network/system error:', error?.message || error);
 
       if (retryCount < MAX_RETRIES) {
         publishToQueue(channel, QUEUE, msg.content, {
@@ -180,7 +219,11 @@ async function start() {
         publishToQueue(channel, FAILURE_QUEUE, msg.content, {
           ...msg.properties.headers,
           'x-retry-count': retryCount,
-          'x-error': err?.message || String(err),
+          'x-error': error?.message || String(error),
+        });
+        publishRefundResult(channel, payload, {
+          refundStatus: 'failed',
+          error: error?.message || String(error),
         });
       }
 
@@ -189,7 +232,7 @@ async function start() {
   });
 }
 
-start().catch((err) => {
-  console.error('[refund-management] Fatal:', err?.stack || err);
+start().catch((error) => {
+  console.error('[refund-management] Fatal:', error?.stack || error);
   process.exit(1);
 });
