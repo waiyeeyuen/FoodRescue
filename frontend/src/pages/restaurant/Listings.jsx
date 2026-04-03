@@ -22,7 +22,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { DELETE_LISTING_SERVICE_URL, UPLOAD_LISTING_SERVICE_URL } from '@/lib/api';
+import { DELETE_LISTING_SERVICE_URL, INVENTORY_SERVICE_URL } from '@/lib/api';
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -112,7 +112,7 @@ async function readResponseBody(response) {
 
 export default function RestaurantListings() {
   const deleteListingServiceUrl = DELETE_LISTING_SERVICE_URL;
-  const uploadListingServiceUrl = UPLOAD_LISTING_SERVICE_URL;
+  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
 
   const { user } = useAuth();
   const restaurantId = user?.id;
@@ -176,12 +176,12 @@ export default function RestaurantListings() {
     console.log("📡 Fetching listings for restaurantId:", restaurantId);
 
     const currentListingsPromise = fetch(
-      `${uploadListingServiceUrl}/listings/restaurant/${encodeURIComponent(restaurantId)}`,
+      `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
       { signal }
     );
 
     const deletedListingsPromise = fetch(
-      `${uploadListingServiceUrl}/listings/restaurant/${encodeURIComponent(restaurantId)}/deleted`,
+      `${inventoryServiceUrl}/inventory/restaurant/${encodeURIComponent(restaurantId)}/deleted`,
       { signal }
     );
 
@@ -247,7 +247,7 @@ export default function RestaurantListings() {
       if (activeController) activeController.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [restaurantId, uploadListingServiceUrl]);
+  }, [restaurantId, inventoryServiceUrl]);
 
   const liveRows = useMemo(() => {
     const now = Date.now();
@@ -405,7 +405,7 @@ export default function RestaurantListings() {
       const formData = new FormData();
       formData.append('image', file);
 
-      const res = await fetch(`${uploadListingServiceUrl}/listings/upload-image`, {
+      const res = await fetch(`${inventoryServiceUrl}/inventory/upload-image`, {
         method: 'POST',
         body: formData,
       });
@@ -458,7 +458,7 @@ export default function RestaurantListings() {
 
     console.log("🚀 CREATING LISTING PAYLOAD:", payload);
 
-    const res = await fetch(`${uploadListingServiceUrl}/listings`, {
+    const res = await fetch(`${inventoryServiceUrl}/inventory/listings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

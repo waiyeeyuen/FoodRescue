@@ -253,7 +253,7 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
 }
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", service: "composite-recommendation" });
+  res.json({ status: "ok", service: "composite-get-food-recommendation" });
 });
 
 app.get("/recommendations/:userId", async (req, res) => {
@@ -406,5 +406,5 @@ app.get("/recommendations/:userId", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Composite recommendation service running on port ${PORT}`);
+  console.log(`Composite get-food-recommendation service running on port ${PORT}`);
 });

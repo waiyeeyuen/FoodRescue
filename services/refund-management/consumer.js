@@ -1,14 +1,16 @@
 import 'dotenv/config';
 import amqplib from 'amqplib';
+import Stripe from 'stripe';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://guest:guest@localhost:5672';
-const PAYMENT_SERVICE_URL = process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003';
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 
 const QUEUE = 'refund.request';
 const DLQ = 'refund.request.dlq';
 const RESULT_QUEUE = 'refund.result';
 const FAILURE_QUEUE = 'refund.failed';
 const MAX_RETRIES = 3;
+const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 function publishToQueue(channel, queue, content, headers = {}) {
   channel.sendToQueue(queue, content, {
@@ -47,18 +49,19 @@ async function connectWithRetry(retries = 20, delayMs = 1000) {
 
 function buildRefundRequest(payload) {
   const status = String(payload?.status || '').toLowerCase();
+  const fullRefund = Boolean(payload?.fullRefund);
   const amountTotal = Number(payload?.amountTotal ?? 0);
   const refundAmount = Number(payload?.refundAmount ?? 0);
 
   const insufficientItems = Array.isArray(payload?.insufficientItems) ? payload.insufficientItems : [];
   const itemNames = insufficientItems.map((item) => item?.name).filter(Boolean);
 
-  if (status === 'failed') {
+  if (status === 'failed' || fullRefund) {
     return {
       amount: amountTotal,
       reason: itemNames.length > 0
-        ? `inventory_conflict: all items out of stock (${itemNames.join(', ')})`
-        : 'inventory_conflict: all items out of stock',
+        ? `inventory_conflict: full refund issued (${itemNames.join(', ')})`
+        : 'inventory_conflict: full refund issued',
     };
   }
 
@@ -70,27 +73,43 @@ function buildRefundRequest(payload) {
   };
 }
 
-async function sendRefund({ paymentId, amount, reason }) {
-  const response = await fetch(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ amount, reason }),
-  });
-
-  const text = await response.text().catch(() => '');
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
+async function sendRefund({ paymentIntentId, amount, reason }) {
+  if (!stripe) {
+    throw new Error('STRIPE_SECRET_KEY is not configured');
+  }
+  if (!paymentIntentId) {
+    return {
+      ok: false,
+      status: 400,
+      text: JSON.stringify({ error: 'Missing paymentIntentId' }),
+      data: null,
+    };
   }
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    text,
-    data,
-  };
+  const refundPayload = { payment_intent: paymentIntentId };
+  if (amount) refundPayload.amount = amount;
+  if (reason) refundPayload.metadata = { reason };
+
+  try {
+    const refund = await stripe.refunds.create(refundPayload);
+    return {
+      ok: true,
+      status: 200,
+      text: JSON.stringify({ refundId: refund.id, refundStatus: refund.status }),
+      data: refund,
+    };
+  } catch (error) {
+    const statusCode = Number(error?.statusCode || error?.status || 500) || 500;
+    return {
+      ok: false,
+      status: statusCode,
+      text: JSON.stringify({
+        error: error?.message || 'Failed to create Stripe refund',
+        code: error?.code || '',
+      }),
+      data: null,
+    };
+  }
 }
 
 function sendToDlq(channel, msg, reason) {
@@ -108,6 +127,7 @@ function publishRefundResult(channel, payload, override = {}) {
     paymentId: payload?.paymentId || '',
     userId: payload?.userId || '',
     status: payload?.status || '',
+    fullRefund: Boolean(payload?.fullRefund),
     insufficientItems: Array.isArray(payload?.insufficientItems) ? payload.insufficientItems : [],
     refundAmount: Number(payload?.refundAmount ?? payload?.amountTotal ?? 0) || 0,
     refundId: '',
@@ -148,9 +168,20 @@ async function start() {
     }
 
     const paymentId = payload?.paymentId;
+    const paymentIntentId = payload?.paymentIntentId;
     if (!paymentId) {
       console.error('[refund-management] Missing paymentId; sending to DLQ');
       sendToDlq(channel, msg, 'missing_payment_id');
+      channel.ack(msg);
+      return;
+    }
+    if (!paymentIntentId) {
+      console.error('[refund-management] Missing paymentIntentId; sending to DLQ');
+      sendToDlq(channel, msg, 'missing_payment_intent_id');
+      publishRefundResult(channel, payload, {
+        refundStatus: 'failed',
+        error: 'Missing paymentIntentId',
+      });
       channel.ack(msg);
       return;
     }
@@ -161,16 +192,13 @@ async function start() {
     console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId}`);
 
     try {
-      const result = await sendRefund({ paymentId, amount, reason });
+      const result = await sendRefund({ paymentIntentId, amount, reason });
 
       if (result.ok) {
         console.log('[refund-management] Refund successful');
         publishRefundResult(channel, payload, {
-          refundId: result.data?.payment?.refundId || '',
-          refundStatus:
-            result.data?.payment?.refundStatus ||
-            result.data?.payment?.status ||
-            'succeeded',
+          refundId: result.data?.id || '',
+          refundStatus: result.data?.status || 'succeeded',
         });
         channel.ack(msg);
         return;

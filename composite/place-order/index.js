@@ -383,9 +383,11 @@ async function requestInventoryCheck({
 async function requestRefund({
   orderId,
   paymentId,
+  paymentIntentId,
   userId,
   currency,
   status,
+  fullRefund,
   confirmedItems,
   insufficientItems,
   refundAmount,
@@ -395,9 +397,11 @@ async function requestRefund({
   await publishToQueue(QUEUES.REFUND_REQUEST, {
     orderId,
     paymentId,
+    paymentIntentId: paymentIntentId || null,
     userId,
     currency: currency || "sgd",
     status,
+    fullRefund: Boolean(fullRefund),
     confirmedItems: Array.isArray(confirmedItems) ? confirmedItems : [],
     insufficientItems: Array.isArray(insufficientItems) ? insufficientItems : [],
     refundAmount,
@@ -412,6 +416,7 @@ async function processInventoryResultMessage(payload) {
   const {
     orderId,
     paymentId,
+    paymentIntentId,
     userId,
     currency,
     status,
@@ -477,39 +482,20 @@ async function processInventoryResultMessage(payload) {
   }
 
   if (status === "partial") {
-    const partialTotal = (confirmedItems || []).reduce(
-      (sum, item) => sum + (Number(item.unitAmount) / 100) * Number(item.quantity),
-      0
+    console.log(
+      `[place-order] ⚠️ Partial stock result for order ${orderId} — refunding entire order instead of creating a partial order`
     );
-
-    console.log(`[place-order] Creating partial order ${orderId}`);
-    await fetchJson(`${ORDER_SERVICE_URL}/orders`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        orderId,
-        customerId: userId,
-        items: confirmedItems,
-        totalPrice: Number(partialTotal.toFixed(2)),
-        currency: currency || "sgd",
-        status: "confirmed",
-        notes: `Partial order — out of stock: ${(insufficientItems || [])
-          .map((item) => item.name)
-          .join(", ")}`,
-      }),
-    });
-    console.log(`[place-order] ✅ Partial order created`);
-
-    await markRewardUsedIfNeeded(paymentId, orderId);
     await requestRefund({
       orderId,
       paymentId,
+      paymentIntentId,
       userId,
       currency,
       status,
+      fullRefund: true,
       confirmedItems,
       insufficientItems,
-      refundAmount,
+      refundAmount: amountTotal,
       amountTotal,
     });
     return;
@@ -520,9 +506,11 @@ async function processInventoryResultMessage(payload) {
     await requestRefund({
       orderId,
       paymentId,
+      paymentIntentId,
       userId,
       currency,
       status,
+      fullRefund: true,
       confirmedItems,
       insufficientItems,
       refundAmount,
@@ -539,6 +527,7 @@ async function processRefundResultMessage(payload) {
     orderId,
     userId,
     status,
+    fullRefund,
     refundAmount,
     refundId,
     refundStatus,
@@ -558,7 +547,7 @@ async function processRefundResultMessage(payload) {
     return;
   }
 
-  if (status === "partial") {
+  if (status === "partial" && !fullRefund) {
     fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
       userId,
       type: "ORDER_PARTIAL",
@@ -572,7 +561,7 @@ async function processRefundResultMessage(payload) {
     return;
   }
 
-  if (status === "failed") {
+  if (status === "failed" || fullRefund) {
     fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
       userId,
       type: "ORDER_REFUNDED",
