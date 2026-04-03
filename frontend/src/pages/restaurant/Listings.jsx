@@ -206,7 +206,7 @@ export default function RestaurantListings() {
       throw new Error(message);
     }
 
-    console.log("Setting listings:", data);
+    console.log("✅ Setting listings:", data);
 
     setListings(Array.isArray(data) ? data : []);
     if (!deletedRes.ok) {
@@ -217,7 +217,7 @@ export default function RestaurantListings() {
     }
   } catch (e) {
     if (e?.name === 'AbortError') return;
-    console.error("fetchListings error:", e);
+    console.error("❌ fetchListings error:", e);
     setError(e?.message || 'Failed to load listings');
     setDeletedListings([]);
   } finally {
@@ -476,9 +476,9 @@ export default function RestaurantListings() {
       );
     }
 
-    console.log("Listing created successfully");
+    console.log("✅ Listing created successfully");
 
-    // reset form AFTER success
+    // ✅ reset form AFTER success
     setForm((f) => ({
       ...f,
       itemName: '',
@@ -492,13 +492,13 @@ export default function RestaurantListings() {
 
     setUploadPreviewUrl('');
 
-    // refetch listings
+    // ✅ refetch listings
     await fetchListings();
 
     setCreateOpen(false);
 
   } catch (e) {
-    console.error("Create listing error:", e);
+    console.error("❌ Create listing error:", e);
     setCreateError(e?.message || 'Failed to create listing');
   } finally {
     setCreating(false);

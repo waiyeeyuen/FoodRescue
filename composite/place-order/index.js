@@ -63,7 +63,7 @@ function decrementOutSystemsInventory(items) {
     const boughtQuantity = Number(item?.quantity) || 1;
     
     if (!itemId) {
-      console.warn(`[place-order] Skipping decrement — missing itemId for:`, item.name);
+      console.warn(`[place-order] ⚠️ Skipping decrement — missing itemId for:`, item.name);
       return;
     }
 
@@ -71,12 +71,12 @@ function decrementOutSystemsInventory(items) {
     fetch(url, { method: "PUT" })
       .then((res) => {
         if (!res.ok) {
-          console.warn(`[place-order] Inventory decrement failed (${res.status}) for itemId: ${itemId}, quantity: ${boughtQuantity}`);
+          console.warn(`[place-order] ⚠️ Inventory decrement failed (${res.status}) for itemId: ${itemId}, quantity: ${boughtQuantity}`);
         } else {
-          console.log(`[place-order] Inventory inventory decremented for itemId: ${itemId}, quantity: ${boughtQuantity}`);
+          console.log(`[place-order] ✅ Inventory inventory decremented for itemId: ${itemId}, quantity: ${boughtQuantity}`);
         }
       })
-      .catch((err) => console.warn(`[place-order] Inventory decrement error for itemId ${itemId}:`, err.message));
+      .catch((err) => console.warn(`[place-order] ⚠️ Inventory decrement error for itemId ${itemId}:`, err.message));
   });
 }
 
@@ -307,7 +307,7 @@ app.post("/orders/place", async (req, res) => {
       }
     );
 
-    console.log(`[place-order] Checkout session created for order ${orderId}`);
+    console.log(`[place-order] ✅ Checkout session created for order ${orderId}`);
 
     res.status(201).json({
       success: true,
@@ -316,7 +316,7 @@ app.post("/orders/place", async (req, res) => {
       payment: paymentResponse,
     });
   } catch (error) {
-    console.error("[place-order] /orders/place error:", error.message);
+    console.error("[place-order] ❌ /orders/place error:", error.message);
     res.status(error.status || 500).json({ error: error.message || "Failed to place order" });
   }
 });
@@ -335,7 +335,7 @@ app.post("/orders/inventory-result", async (req, res) => {
     amountTotal,
   } = req.body || {};
 
-  console.log(`[place-order] Inventory result received for order ${orderId} — status: ${status}`);
+  console.log(`[place-order] 📦 Inventory result received for order ${orderId} — status: ${status}`);
   console.log(`[place-order] Payload:`, JSON.stringify(req.body, null, 2)); 
 
   if (!orderId || !paymentId || !userId || !status) {
@@ -364,7 +364,7 @@ app.post("/orders/inventory-result", async (req, res) => {
           status: "confirmed",
         }),
       });
-      console.log(`[place-order] Order created:`, orderRes?.order?.orderId || orderId);
+      console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
 
       // Inventory decrement happens in the inventory consumer as part of stock-check processing.
 
@@ -380,9 +380,9 @@ app.post("/orders/inventory-result", async (req, res) => {
             status: "completed",
           }),
         });
-        console.log(`[place-order] Payment logged for order ${orderId}`);
+        console.log(`[place-order] ✅ Payment logged for order ${orderId}`);
       } catch (err) {
-        console.warn(`[place-order] Payment log failed (non-fatal):`, err.message);
+        console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, err.message);
       }
 
       await markRewardUsedIfNeeded(paymentId, orderId);
@@ -393,7 +393,7 @@ app.post("/orders/inventory-result", async (req, res) => {
         type: "ORDER_CONFIRMED",
         orderId,
       });
-      console.log(`[place-order] ORDER_CONFIRMED notification fired for ${userId}`);
+      console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId}`);
 
       return res.json({ success: true, orderId, status: "confirmed" });
     }
@@ -419,7 +419,7 @@ app.post("/orders/inventory-result", async (req, res) => {
           notes: `Partial order — out of stock: ${(insufficientItems || []).map(i => i.name).join(", ")}`,
         }),
       });
-      console.log(`[place-order] Partial order created`);
+      console.log(`[place-order] ✅ Partial order created`);
 
       // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
       await markRewardUsedIfNeeded(paymentId, orderId);
@@ -437,7 +437,7 @@ app.post("/orders/inventory-result", async (req, res) => {
 
     // ── FULL STOCK FAILURE ────────────────────────────────────────────────────
     if (status === "failed") {
-      console.log(`[place-order] All items out of stock — full refund for order ${orderId}`);
+      console.log(`[place-order] ❌ All items out of stock — full refund for order ${orderId}`);
       // Refund is handled by refund-management (RabbitMQ consumer on `order.error`).
 
       // Fire-and-forget notification
@@ -454,7 +454,7 @@ app.post("/orders/inventory-result", async (req, res) => {
     return res.status(400).json({ error: `Unknown status: ${status}` });
 
   } catch (error) {
-    console.error("[place-order] /orders/inventory-result error:", error.message);
+    console.error("[place-order] ❌ /orders/inventory-result error:", error.message);
     res.status(500).json({ error: error.message || "Orchestration failed" });
   }
 });

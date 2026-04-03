@@ -59,7 +59,7 @@ async function retryGetPayment(paymentId, retries = 5, delayMs = 1000) {
     console.log(`[Webhook] Payment record not found, retrying in ${delayMs}ms... (attempt ${i + 1}/${retries})`);
     await new Promise(r => setTimeout(r, delayMs));
   }
-  console.log(`[Webhook] Payment record still not found after ${retries} retries`);
+  console.log(`[Webhook] ❌ Payment record still not found after ${retries} retries`);
   return null;
 }
 
@@ -124,7 +124,7 @@ export async function createCheckoutSession(req, res) {
       cancelUrl: finalCancelUrl
     });
 
-    console.log('[Checkout] Stripe session created:', session.id);
+    console.log('[Checkout] ✅ Stripe session created:', session.id);
 
     const amountTotal = calculateAmountTotal(items);
 
@@ -146,11 +146,11 @@ export async function createCheckoutSession(req, res) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log('[Checkout] Payment record saved to Firestore');
+    console.log('[Checkout] ✅ Payment record saved to Firestore');
 
     res.status(201).json({ paymentId, status: "pending", checkoutUrl: session.url });
   } catch (error) {
-    console.error('[Checkout] Error:', error.message);
+    console.error('[Checkout] ❌ Error:', error.message);
     res.status(500).json({ error: "Failed to create checkout session", details: error.message });
   }
 }
@@ -197,7 +197,7 @@ export async function refundPayment(req, res) {
 
     res.json({ message: "Refund processed successfully", payment: updatedPayment });
   } catch (error) {
-    console.error('[Refund] Error:', error.message);
+    console.error('[Refund] ❌ Error:', error.message);
     res.status(500).json({ error: "Failed to refund payment", details: error.message });
   }
 }
@@ -217,10 +217,10 @@ export async function logPayment(req, res) {
       loggedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    console.log(`[Payment] Payment logged for order ${orderId} | paymentId ${paymentId}`);
+    console.log(`[Payment] ✅ Payment logged for order ${orderId} | paymentId ${paymentId}`);
     res.json({ success: true, orderId, paymentId });
   } catch (error) {
-    console.error('[Payment] logPayment error:', error.message);
+    console.error('[Payment] ❌ logPayment error:', error.message);
     res.status(500).json({ error: "Failed to log payment" });
   }
 }
@@ -246,12 +246,12 @@ async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRe
       currency = currency || session.currency;
       console.warn('[Payment] Payment record missing items; falling back to Stripe line_items.');
     } catch (err) {
-      console.error('[Payment] Failed to fetch Stripe line_items:', err?.message || err);
+      console.error('[Payment] ❌ Failed to fetch Stripe line_items:', err?.message || err);
     }
   }
 
   if (!Array.isArray(items) || items.length === 0) {
-    console.error('[Payment] Cannot publish stock check: missing items');
+    console.error('[Payment] ❌ Cannot publish stock check: missing items');
     return { published: false, reason: 'missing_items' };
   }
 
@@ -347,7 +347,7 @@ export async function confirmCheckoutSession(req, res) {
       ...result
     });
   } catch (error) {
-    console.error('[Payment] confirmCheckoutSession error:', error);
+    console.error('[Payment] ❌ confirmCheckoutSession error:', error);
     return res.status(500).json({ error: 'Failed to confirm checkout session', details: error?.message || String(error) });
   }
 }
@@ -359,7 +359,7 @@ export async function handleStripeWebhook(req, res) {
   try {
     event = stripe.webhooks.constructEvent(req.body, signature, config.stripeWebhookSecret);
   } catch (error) {
-    console.error('[Webhook] Signature verification failed:', error.message);
+    console.error('[Webhook] ❌ Signature verification failed:', error.message);
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 
@@ -375,7 +375,7 @@ export async function handleStripeWebhook(req, res) {
         const userId    = session.metadata?.userId;
 
         console.log('==============================');
-        console.log('[Webhook] checkout.session.completed received');
+        console.log('[Webhook] ✅ checkout.session.completed received');
         console.log('[Webhook] Session ID:', session.id);
         console.log('[Webhook] Metadata:', { paymentId, orderId, userId });
         console.log('==============================');
@@ -399,10 +399,10 @@ export async function handleStripeWebhook(req, res) {
           if (preserveRefundState) {
             console.log('[Webhook] Refund state already exists; skipping paid overwrite');
           } else {
-            console.log('[Webhook] Payment updated to "paid"');
+            console.log('[Webhook] ✅ Payment updated to "paid"');
           }
         } else {
-          console.log('[Webhook] No paymentId in metadata — skipping payment update');
+          console.log('[Webhook] ❌ No paymentId in metadata — skipping payment update');
         }
 
         const paymentRecord = paymentId ? await retryGetPayment(paymentId) : null;
@@ -412,7 +412,7 @@ export async function handleStripeWebhook(req, res) {
           try {
             const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
             if (result.published) {
-              console.log('[Webhook] Published stock check to RabbitMQ');
+              console.log('[Webhook] ✅ Published stock check to RabbitMQ');
             } else {
               console.log('[Webhook] Skipped stock check publish:', result.reason);
               if (result.reason !== 'already_published') {
@@ -420,11 +420,11 @@ export async function handleStripeWebhook(req, res) {
               }
             }
           } catch (err) {
-            console.error('[Webhook] RabbitMQ publish failed:', err);
+            console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
             throw err;
           }
         } else {
-          console.log('[Webhook]    Skipped RabbitMQ publish');
+          console.log('[Webhook] ❌ Skipped RabbitMQ publish');
           console.log('[Webhook]    orderId:', orderId);
           console.log('[Webhook]    paymentRecord exists:', !!paymentRecord);
         }
@@ -468,9 +468,9 @@ export async function handleStripeWebhook(req, res) {
               refundId,
               refundCompletedAt: admin.firestore.FieldValue.serverTimestamp()
             });
-            console.log('[Webhook] Refund recorded for paymentId:', matched.paymentId);
+            console.log('[Webhook] ✅ Refund recorded for paymentId:', matched.paymentId);
           } else {
-            console.log('[Webhook] No matching payment found for paymentIntentId:', paymentIntentId);
+            console.log('[Webhook] ❌ No matching payment found for paymentIntentId:', paymentIntentId);
           }
         }
         break;
@@ -482,7 +482,7 @@ export async function handleStripeWebhook(req, res) {
 
     res.json({ received: true });
   } catch (error) {
-    console.error('[Webhook] Handler error:', error?.stack || error);
+    console.error('[Webhook] ❌ Handler error:', error?.stack || error);
     res.status(500).json({ error: "Webhook handling failed", details: error?.message || String(error) });
   }
 }

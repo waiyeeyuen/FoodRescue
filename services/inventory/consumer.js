@@ -55,7 +55,7 @@ async function decrementOutSystemsListing(itemId, boughtQuantity) {
 
 async function processMessage(channel, payload) {
   console.log('==============================');
-  console.log('[Consumer] Message consumed from RabbitMQ queue');
+  console.log('[Consumer] ✅ Message consumed from RabbitMQ queue');
   console.log('[Consumer] Raw payload:', JSON.stringify(payload, null, 2));
   console.log('==============================');
 
@@ -97,7 +97,7 @@ async function processMessage(channel, payload) {
         itemRefundAmount: unitAmountMinor * requestedQty,
       });
       refundAmount += unitAmountMinor * requestedQty;
-      console.log(`[Consumer] Insufficient: "${itemName}"`);
+      console.log(`[Consumer] ❌ Insufficient: "${itemName}"`);
     } else {
       // Atomic decrement to prevent "2 orders, 1 stock" race
       const decremented = listingId
@@ -114,13 +114,13 @@ async function processMessage(channel, payload) {
           itemRefundAmount: unitAmountMinor * requestedQty,
         });
         refundAmount += unitAmountMinor * requestedQty;
-        console.log(`[Consumer] Decrement failed (inventory conflict): "${itemName}"`);
+        console.log(`[Consumer] ❌ Decrement failed (inventory conflict): "${itemName}"`);
       } else {
         confirmedItems.push({
           ...item,
           itemId: requestedItemId || listingId,
         });
-        console.log(`[Consumer] Stock OK + decremented: "${itemName}" (itemId=${requestedItemId || listingId})`);
+        console.log(`[Consumer] ✅ Stock OK + decremented: "${itemName}" (itemId=${requestedItemId || listingId})`);
       }
     }
   }
@@ -156,7 +156,7 @@ async function processMessage(channel, payload) {
 
       console.log(`[Consumer] Published to ${ERROR_QUEUE}`);
     } catch (err) {
-      console.error('[Consumer] Failed to publish to order.error:', err?.message || err);
+      console.error('[Consumer] ❌ Failed to publish to order.error:', err?.message || err);
     }
   }
 
@@ -182,7 +182,7 @@ async function processMessage(channel, payload) {
     throw new Error(`Place Order responded ${res.status}: ${errText}`);
   }
 
-  console.log(`[Consumer] Place Order notified — order ${orderId} status: ${status}`);
+  console.log(`[Consumer] ✅ Place Order notified — order ${orderId} status: ${status}`);
 }
 
 async function startConsumer() {
@@ -205,7 +205,7 @@ async function startConsumer() {
   await channel.assertQueue(ERROR_QUEUE, { durable: true });
   channel.prefetch(1);
 
-  console.log(`[Consumer] Listening on queue: ${QUEUE}`);
+  console.log(`[Consumer] ✅ Listening on queue: ${QUEUE}`);
   console.log(`[Consumer] DLQ enabled: ${DLQ}`);
   console.log(`[Consumer] Error queue enabled: ${ERROR_QUEUE}`);
 
@@ -216,7 +216,7 @@ async function startConsumer() {
     try {
       payload = JSON.parse(msg.content.toString());
     } catch {
-      console.error('[Consumer] Invalid JSON, discarding message');
+      console.error('[Consumer] ❌ Invalid JSON, discarding message');
       channel.ack(msg);
       return;
     }
@@ -225,7 +225,7 @@ async function startConsumer() {
       await processMessage(channel, payload);
       channel.ack(msg);
     } catch (err) {
-      console.error('[Consumer] Processing failed:', err.message);
+      console.error('[Consumer] ❌ Processing failed:', err.message);
       try {
         channel.sendToQueue(
           DLQ,
@@ -241,7 +241,7 @@ async function startConsumer() {
         );
         console.error(`[Consumer] Sent message to DLQ: ${DLQ}`);
       } catch (dlqErr) {
-        console.error('[Consumer] Failed to send to DLQ:', dlqErr?.message || dlqErr);
+        console.error('[Consumer] ❌ Failed to send to DLQ:', dlqErr?.message || dlqErr);
       } finally {
         // Ack so it doesn't disappear silently (previously it was dropped on nack with no DLX).
         channel.ack(msg);

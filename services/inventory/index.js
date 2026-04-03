@@ -179,6 +179,27 @@ function fileToDataUri(file) {
   return `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
 }
 
+// function toCloudinaryPublicId(value) {
+//   if (!value) return ''
+//   const raw = String(value).trim()
+//   if (!raw) return ''
+
+//   // If it is already a public id-like value, keep it.
+//   if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+
+//   // Convert full Cloudinary delivery URL to public_id to keep payload short.
+//   const marker = '/image/upload/'
+//   const markerIndex = raw.indexOf(marker)
+//   if (markerIndex === -1) return raw
+
+//   let pathPart = raw.slice(markerIndex + marker.length)
+//   const queryIndex = pathPart.indexOf('?')
+//   if (queryIndex >= 0) pathPart = pathPart.slice(0, queryIndex)
+
+//   const versionMatch = pathPart.match(/^v\d+\/(.+)$/)
+//   const publicIdWithExt = versionMatch ? versionMatch[1] : pathPart
+//   return publicIdWithExt.replace(/\.[^/.]+$/, '')
+// }
 
 async function createListing(req, res) {
   try {
