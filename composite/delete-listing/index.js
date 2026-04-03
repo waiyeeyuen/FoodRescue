@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
 
 dotenv.config();
 
@@ -18,6 +20,155 @@ const NOTIFICATION_SERVICE_URL =
 const REWARD_SERVICE_URL =
   process.env.REWARD_SERVICE_URL || "http://localhost:3005";
 
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Delete Listing Composite API",
+      version: "1.0.0",
+      description:
+        "Orchestrates listing deletion, refunds, reward restoration, and customer notifications.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct composite-delete-listing service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [
+      { name: "Delete Listing", description: "Delete listing orchestration endpoint" },
+    ],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string" },
+            details: { nullable: true },
+          },
+        },
+        DeletePreviewResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            listing: {
+              type: "object",
+              properties: {
+                listingId: { type: "string" },
+                restaurantId: { type: "string" },
+                restaurantName: { type: "string" },
+                itemName: { type: "string" },
+                quantity: { type: "number" },
+                price: { type: "number" },
+                expiryTime: { type: "string" },
+                cuisineType: { type: "string" },
+              },
+            },
+            summary: {
+              type: "object",
+              properties: {
+                affectedOrders: { type: "number" },
+                affectedCustomers: { type: "number" },
+                totalListingUnits: { type: "number" },
+                requiresRefunds: { type: "boolean" },
+                totalRefundAmountMinor: { type: "number" },
+                totalRefundAmount: { type: "number" },
+              },
+            },
+            affectedOrders: {
+              type: "array",
+              items: { type: "object" },
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      "/delete-listing/{listingId}": {
+        post: {
+          tags: ["Delete Listing"],
+          summary: "Delete listing",
+          description:
+            "Gateway copy-paste URL: http://localhost:8000/delete-listing/{listingId}",
+          parameters: [
+            {
+              in: "path",
+              name: "listingId",
+              required: true,
+              schema: { type: "string", example: "125" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["restaurantId"],
+                  properties: {
+                    restaurantId: { type: "string", example: "18CXbYrzy0o2v5BbHEUq" },
+                    restaurantName: { type: "string", example: "Korean Jap Bites" },
+                    reason: { type: "string", example: "manual test delete" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Listing deleted and orchestration completed",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean" },
+                      listingDeleted: { type: "boolean" },
+                      listing: { type: "object" },
+                      summary: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description: "Invalid request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: {
+              description: "Listing not found",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+
 const corsOrigins = (process.env.CORS_ORIGINS ||
   "http://localhost:3000,http://localhost:5173")
   .split(",")
@@ -30,6 +181,10 @@ app.use(
   })
 );
 app.use(express.json());
+app.get("/delete-listing-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use("/delete-listing-api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 function getField(item, ...keys) {
   for (const key of keys) {
