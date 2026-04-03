@@ -124,22 +124,30 @@ async function startConsumer() {
   
   ['order.expired', 'listing.expired', 'reward.triggered'].forEach(queue => {
     channel.consume(queue, async (msg) => {
-      const data = await handleEvent(msg);
-      
-      const status = await sendNotification(data);
-       
-      await db.collection('notifications')
-        .doc(data.docId)
-        .update({ status });
+      if (!msg) return;
 
-      upsertCachedNotification(data.userId, {
-        id: data.docId,
-        ...data,
-        status,
-        createdAt: new Date().toISOString(),
-      });
-        
-      channel.ack(msg);
+      let data;
+
+      try {
+        data = await handleEvent(msg);
+        const status = await sendNotification(data);
+
+        await db.collection('notifications')
+          .doc(data.docId)
+          .update({ status });
+
+        upsertCachedNotification(data.userId, {
+          id: data.docId,
+          ...data,
+          status,
+          createdAt: new Date().toISOString(),
+        });
+
+        channel.ack(msg);
+      } catch (error) {
+        console.error(`[notifications/consumer] Failed to process ${queue}:`, error?.message || error);
+        channel.nack(msg, false, false);
+      }
     });
   });
 }
