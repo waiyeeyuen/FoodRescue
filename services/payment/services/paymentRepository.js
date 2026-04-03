@@ -115,6 +115,10 @@ export async function claimStockCheckDispatch(paymentId, fallbackData = {}, clai
     const currency = payment.currency || fallbackData.currency || "sgd";
     const orderId = payment.orderId || fallbackData.orderId || "";
     const userId = payment.userId || fallbackData.userId || "";
+    const paymentIntentId =
+      payment.stripePaymentIntentId ||
+      fallbackData.paymentIntentId ||
+      "";
 
     const dispatchToken = randomUUID();
     const updates = {
@@ -137,6 +141,9 @@ export async function claimStockCheckDispatch(paymentId, fallbackData = {}, clai
     if (!payment.userId && userId) {
       updates.userId = userId;
     }
+    if (!payment.stripePaymentIntentId && paymentIntentId) {
+      updates.stripePaymentIntentId = paymentIntentId;
+    }
 
     transaction.set(docRef, updates, { merge: true });
 
@@ -146,6 +153,7 @@ export async function claimStockCheckDispatch(paymentId, fallbackData = {}, clai
       queuePayload: {
         orderId,
         paymentId,
+        paymentIntentId,
         userId,
         currency,
         amountTotal,
