@@ -19,11 +19,6 @@ The current repo uses these composite microservices only:
 - `place-order`
 - `delete-listing`
 
-Important note:
-
-- restaurant listing creation is **not** a composite flow in the current implementation
-- the restaurant UI creates listings directly through the atomic `inventory` service
-
 ### SOA Layers Diagram
 
 ![SOA Layers Diagram](docs/diagrams/soa-layers-diagram.png)
@@ -34,12 +29,12 @@ Restaurants frequently have unsold food near the end of the day, while customers
 
 FoodRescue addresses this by:
 
-- allowing restaurants to publish discounted rescue meals before they expire
-- surfacing relevant listings to customers
-- supporting secure checkout and payment
-- notifying users about order outcomes and refunds
-- rewarding repeat rescue behavior with discount eligibility
-- allowing restaurants to remove listings safely while automatically refunding affected customers
+- Allowing restaurants to publish discounted rescue meals before they expire
+- Surfacing relevant listings to customers
+- Supporting secure checkout and payment
+- Notifying users about order outcomes and refunds
+- Rewarding repeat rescue behavior with discount eligibility
+- Allowing restaurants to remove listings safely while automatically refunding affected customers
 
 ## User Scenarios
 
@@ -224,8 +219,8 @@ Notes:
 
 Important:
 
-- do not commit real secrets to public repositories
-- rotate any provider credentials before external sharing or submission if needed
+- Do not commit real secrets to public repositories
+- Rotate any provider credentials before external sharing or submission if needed
 
 ## Docker Runtime
 
@@ -316,8 +311,8 @@ The current Kong config exposes these public route prefixes:
 
 ## Current Behavior Notes
 
-- the recommendation route is rate-limited at Kong to `5 requests per minute per IP`
-- when the frontend receives a `429` on recommendations, it falls back to the last successful recommendation snapshot instead of showing a hard failure
+- The recommendation route is rate-limited at Kong to `5 requests per minute per IP`
+- When the frontend receives a `429` on recommendations, it falls back to the last successful recommendation snapshot instead of showing a hard failure
 - Scenario 2 propagates `x-correlation-id` across HTTP calls, RabbitMQ messages, logs, and Stripe session metadata
 - Scenario 3 create-listing is direct UI-to-inventory; only delete-listing uses the composite/orchestrator
 
