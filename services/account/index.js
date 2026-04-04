@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import swaggerJsdoc from 'swagger-jsdoc'
 import swaggerUi from 'swagger-ui-express'
+import { randomUUID } from 'crypto'
 import admin, { db } from '../firebase/firebaseAdmin.js'
 
 const app = express()
@@ -690,12 +691,31 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
 
+const serviceName = 'account'
+const CORRELATION_HEADER = 'x-correlation-id'
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
+  return String(Array.isArray(value) ? value[0] : value || '').trim()
+}
+
+function correlationMiddleware(serviceLabel) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceLabel}:${randomUUID()}`
+    req.correlationId = correlationId
+    res.setHeader(CORRELATION_HEADER, correlationId)
+    console.log(`[${serviceLabel}] ${req.method} ${req.originalUrl} cid=${correlationId}`)
+    next()
+  }
+}
+
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
 };
 app.use(cors(corsOptions))
+app.use(correlationMiddleware(serviceName))
 app.use(express.json())
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
