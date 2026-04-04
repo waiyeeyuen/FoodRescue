@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
@@ -19,6 +20,7 @@ const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
 const REWARD_SERVICE_URL =
   process.env.REWARD_SERVICE_URL || "http://localhost:3005";
+const CORRELATION_HEADER = "x-correlation-id";
 
 const swaggerOptions = {
   definition: {
@@ -181,6 +183,36 @@ app.use(
   })
 );
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function createCorrelationId(scope = "delete-listing") {
+  return `${scope}:${randomUUID()}`;
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || createCorrelationId(serviceName);
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("delete-listing"));
+
 app.get("/delete-listing-api-docs.json", (req, res) => {
   res.json(swaggerSpec);
 });
@@ -245,8 +277,11 @@ async function readBody(response) {
   }
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options = {}, correlationId = "") {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  });
   const data = await readBody(response);
 
   if (!response.ok) {
@@ -282,9 +317,11 @@ function buildListingSummary(listing) {
   };
 }
 
-async function getListingForRestaurant({ listingId, restaurantId }) {
+async function getListingForRestaurant({ listingId, restaurantId, correlationId = "" }) {
   const listings = await fetchJson(
-    `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(restaurantId)}`
+    `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
+    {},
+    correlationId
   );
 
   const matched = Array.isArray(listings)
@@ -305,6 +342,7 @@ async function getAffectedOrders({
   restaurantId,
   restaurantName = "",
   includeCompleted = true,
+  correlationId = "",
 }) {
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
@@ -315,7 +353,9 @@ async function getAffectedOrders({
   return fetchJson(
     `${ORDER_SERVICE_URL}/orders/listings/${encodeURIComponent(listingId)}/affected${
       query ? `?${query}` : ""
-    }`
+    }`,
+    {},
+    correlationId
   );
 }
 
@@ -323,6 +363,7 @@ async function processRefund({
   orderId,
   amountMinor,
   reason,
+  correlationId = "",
 }) {
   return fetchJson(`${REFUND_MANAGEMENT_SERVICE_URL}/refund-management/refund`, {
     method: "POST",
@@ -332,7 +373,7 @@ async function processRefund({
       amountMinor,
       reason,
     }),
-  });
+  }, correlationId);
 }
 
 async function markOrderItemRefunded({
@@ -343,6 +384,7 @@ async function markOrderItemRefunded({
   reason,
   refundAmount,
   paymentId,
+  correlationId = "",
 }) {
   return fetchJson(
     `${ORDER_SERVICE_URL}/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(
@@ -359,7 +401,8 @@ async function markOrderItemRefunded({
         refundAmount,
         paymentId,
       }),
-    }
+    },
+    correlationId
   );
 }
 
@@ -370,6 +413,7 @@ async function deleteInventoryListing({
   restaurantId,
   restaurantName,
   reason,
+  correlationId = "",
 }) {
   return fetchJson(
     `${INVENTORY_SERVICE_URL}/inventory/listings/${encodeURIComponent(listingId)}`,
@@ -383,7 +427,8 @@ async function deleteInventoryListing({
         restaurantName,
         reason,
       }),
-    }
+    },
+    correlationId
   );
 }
 
@@ -474,6 +519,7 @@ async function restoreRewardVoucher({
   listingId,
   orderIds,
   paymentIds,
+  correlationId = "",
 }) {
   const restoreKey = `delete_listing:${String(listingId || "").trim()}:${String(userId || "").trim()}`;
 
@@ -489,7 +535,7 @@ async function restoreRewardVoucher({
       sourcePaymentIds: Array.isArray(paymentIds) ? paymentIds : [],
       reason: "listing_deleted_refund",
     }),
-  });
+  }, correlationId);
 }
 
 async function sendChannelNotification({
@@ -500,6 +546,7 @@ async function sendChannelNotification({
   channel,
   quantity,
   orderCount,
+  correlationId = "",
 }) {
   const restaurantName =
     String(getField(listing, "restaurantName", "RestaurantName") || "").trim() ||
@@ -532,7 +579,7 @@ async function sendChannelNotification({
         quantity,
       },
     }),
-  });
+  }, correlationId);
 
   const status = String(response?.status || "").toUpperCase();
   const acceptedStatuses = channel === "SMS" ? ["SENT", "SKIPPED"] : ["STORED"];
@@ -555,6 +602,7 @@ async function sendDualRefundNotifications({
   currency,
   quantity,
   orderCount,
+  correlationId = "",
 }) {
   const outcomes = [];
 
@@ -568,6 +616,7 @@ async function sendDualRefundNotifications({
         channel,
         quantity,
         orderCount,
+        correlationId,
       });
       outcomes.push({ channel, success: true });
     } catch (error) {
@@ -597,13 +646,15 @@ async function loadDeleteContext({
   listingId,
   restaurantId,
   restaurantName = "",
+  correlationId = "",
 }) {
-  const listing = await getListingForRestaurant({ listingId, restaurantId });
+  const listing = await getListingForRestaurant({ listingId, restaurantId, correlationId });
   const affectedOrders = await getAffectedOrders({
     listingId,
     restaurantId,
     restaurantName,
     includeCompleted: true,
+    correlationId,
   });
 
   return { listing, affectedOrders };
@@ -633,10 +684,12 @@ async function handleDeleteListing(req, res) {
   };
 
   try {
+    const correlationId = req.correlationId;
     const { listing, affectedOrders } = await loadDeleteContext({
       listingId,
       restaurantId,
       restaurantName,
+      correlationId,
     });
 
     const refundReason = buildRefundReason({ listing, customReason: reason });
@@ -653,6 +706,7 @@ async function handleDeleteListing(req, res) {
         orderId: order.orderId,
         amountMinor: totalRefundAmountMinor,
         reason: refundReason,
+        correlationId,
       });
 
       const paymentId = String(refundResponse?.paymentId || "").trim();
@@ -671,6 +725,7 @@ async function handleDeleteListing(req, res) {
           reason: refundReason,
           refundAmount: Number(item.refundAmount || 0),
           paymentId,
+          correlationId,
         });
       }
 
@@ -728,6 +783,7 @@ async function handleDeleteListing(req, res) {
           listingId,
           orderIds: rewardEntry.orderIds,
           paymentIds: rewardEntry.paymentIds,
+          correlationId,
         });
 
         results.rewardsRestored.push({
@@ -754,6 +810,7 @@ async function handleDeleteListing(req, res) {
         currency: notificationEntry.currency,
         quantity: notificationEntry.listingQuantity,
         orderCount: notificationEntry.orderIds.length,
+        correlationId,
       });
 
       outcomes.forEach((outcome) => {
@@ -802,6 +859,7 @@ async function handleDeleteListing(req, res) {
       restaurantId,
       restaurantName,
       reason: refundReason,
+      correlationId,
     });
     results.success = true;
     results.listingDeleted = true;
@@ -831,6 +889,7 @@ app.get("/health", (req, res) => {
 
 async function handleDeletePreview(req, res) {
   try {
+    const correlationId = req.correlationId;
     const { listingId } = req.params;
     const { restaurantId = "", restaurantName = "" } = req.query;
 
@@ -842,6 +901,7 @@ async function handleDeletePreview(req, res) {
       listingId,
       restaurantId,
       restaurantName,
+      correlationId,
     });
 
     return res.json(buildPreviewResponse(payload));

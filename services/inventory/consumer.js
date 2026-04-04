@@ -9,6 +9,7 @@ const OUTSYSTEMS_BASE      = String(process.env.OUTSYSTEMS_INVENTORY_BASE_URL ||
 const QUEUE = 'inventory.check';
 const DLQ = 'inventory.check.dlq';
 const RESULT_QUEUE = 'inventory.result';
+const CORRELATION_HEADER = 'x-correlation-id';
 
 function getOutSystemsBaseUrl() {
   if (!OUTSYSTEMS_BASE) {
@@ -52,9 +53,17 @@ async function decrementOutSystemsListing(itemId, boughtQuantity) {
   return res.ok;
 }
 
-async function processMessage(channel, payload) {
+function getMessageCorrelationId(msg, payload) {
+  return (
+    String(msg?.properties?.headers?.[CORRELATION_HEADER] || '').trim() ||
+    String(payload?.correlationId || '').trim() ||
+    ''
+  );
+}
+
+async function processMessage(channel, payload, correlationId = '') {
   console.log('==============================');
-  console.log('[Consumer] ✅ Message consumed from RabbitMQ queue');
+  console.log(`[Consumer] ✅ Message consumed from RabbitMQ queue cid=${correlationId || 'n/a'}`);
   console.log('[Consumer] Raw payload:', JSON.stringify(payload, null, 2));
   console.log('==============================');
 
@@ -66,7 +75,6 @@ async function processMessage(channel, payload) {
     items,
     amountTotal,
     currency,
-    correlationId,
     replyTo,
   } = payload;
 
@@ -82,7 +90,7 @@ async function processMessage(channel, payload) {
     const unitAmountMinor = Number(item.unitAmount ?? 0);
     const requestedItemId = item?.itemId || item?.listingId || item?.id || null;
 
-    console.log(`[Consumer] Checking stock for "${itemName}" (need: ${requestedQty})`);
+    console.log(`[Consumer] Checking stock for "${itemName}" (need: ${requestedQty}) cid=${correlationId || 'n/a'}`);
     const listing = Array.isArray(listings)
       ? (
         (requestedItemId
@@ -140,7 +148,7 @@ async function processMessage(channel, payload) {
   else if (insufficientItems.length === items.length) status = 'failed';
   else                                                status = 'partial';
 
-  console.log(`[Consumer] Stock check complete — status: ${status}`);
+  console.log(`[Consumer] Stock check complete — status: ${status} cid=${correlationId || 'n/a'}`);
 
   const resultPayload = {
     orderId,
@@ -162,10 +170,11 @@ async function processMessage(channel, payload) {
     {
       persistent: true,
       contentType: 'application/json',
+      headers: correlationId ? { [CORRELATION_HEADER]: correlationId } : {},
     }
   );
 
-  console.log(`[Consumer] ✅ Published inventory result for order ${orderId} to ${replyTo || RESULT_QUEUE}`);
+  console.log(`[Consumer] ✅ Published inventory result for order ${orderId} to ${replyTo || RESULT_QUEUE} cid=${correlationId || 'n/a'}`);
 }
 
 async function startConsumer() {
@@ -205,10 +214,12 @@ async function startConsumer() {
     }
 
     try {
-      await processMessage(channel, payload);
+      const correlationId = getMessageCorrelationId(msg, payload);
+      await processMessage(channel, { ...payload, correlationId }, correlationId);
       channel.ack(msg);
     } catch (err) {
-      console.error('[Consumer] ❌ Processing failed:', err.message);
+      const correlationId = getMessageCorrelationId(msg, payload);
+      console.error(`[Consumer] ❌ Processing failed cid=${correlationId || 'n/a'}:`, err.message);
       try {
         channel.sendToQueue(
           DLQ,
@@ -217,6 +228,7 @@ async function startConsumer() {
             persistent: true,
             contentType: 'application/json',
             headers: {
+              ...(correlationId ? { [CORRELATION_HEADER]: correlationId } : {}),
               'x-error': err?.message || String(err),
               'x-source-queue': QUEUE,
             },

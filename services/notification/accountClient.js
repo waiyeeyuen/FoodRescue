@@ -1,3 +1,5 @@
+const CORRELATION_HEADER = 'x-correlation-id'
+
 function getAccountServiceUrl() {
   return (
     process.env.ACCOUNT_SERVICE_URL ||
@@ -26,7 +28,7 @@ async function readBody(response) {
   }
 }
 
-export async function fetchAccountContact(accountId, kind = 'auto') {
+export async function fetchAccountContact(accountId, kind = 'auto', correlationId = '') {
   const normalizedId = String(accountId || '').trim()
   if (!normalizedId) {
     return {
@@ -39,7 +41,10 @@ export async function fetchAccountContact(accountId, kind = 'auto') {
   }
 
   const response = await fetch(
-    `${getAccountServiceUrl()}/account/internal/contact/${encodeURIComponent(normalizedId)}?kind=${encodeURIComponent(kind)}`
+    `${getAccountServiceUrl()}/account/internal/contact/${encodeURIComponent(normalizedId)}?kind=${encodeURIComponent(kind)}`,
+    {
+      headers: correlationId ? { [CORRELATION_HEADER]: correlationId } : {},
+    }
   )
   const data = await readBody(response)
 
@@ -68,6 +73,7 @@ export async function resolveNotificationDelivery({
   userPhone,
   phone,
   explicitChannel = false,
+  correlationId = '',
 }) {
   const normalizedChannel = String(preferredChannel || 'IN_APP').trim().toUpperCase() || 'IN_APP'
   const explicitPhone = String(userPhone || phone || '').trim()
@@ -100,7 +106,7 @@ export async function resolveNotificationDelivery({
   }
 
   try {
-    const contact = await fetchAccountContact(accountId, accountKind)
+    const contact = await fetchAccountContact(accountId, accountKind, correlationId)
     const smsEnabled = Boolean(contact?.notificationPreferences?.smsEnabled)
     const storedPhone = String(contact?.phone || '').trim()
 

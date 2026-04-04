@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import { randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import swaggerJsdoc from 'swagger-jsdoc'
@@ -580,10 +581,28 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
 };
+const CORRELATION_HEADER = 'x-correlation-id'
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
+  return String(Array.isArray(value) ? value[0] : value || '').trim()
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`
+    req.correlationId = correlationId
+    res.setHeader(CORRELATION_HEADER, correlationId)
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`)
+    next()
+  }
+}
+
 app.use(cors(corsOptions))
 app.use(express.json())
+app.use(correlationMiddleware('account'))
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
 // ─── Constants ────────────────────────────────────────────────────────────────

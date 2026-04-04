@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import amqplib from "amqplib";
 import Stripe from "stripe";
+import { randomUUID } from "crypto";
 
 const app = express();
 
@@ -15,10 +16,44 @@ const DLQ = "refund.request.dlq";
 const RESULT_QUEUE = "refund.result";
 const FAILURE_QUEUE = "refund.failed";
 const MAX_RETRIES = 3;
+const CORRELATION_HEADER = "x-correlation-id";
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`;
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+function getPayloadCorrelationId(payload = {}, fallbackHeaders = {}) {
+  return (
+    getHeaderValue(fallbackHeaders, CORRELATION_HEADER) ||
+    String(payload?.correlationId || "").trim() ||
+    ""
+  );
+}
+
+app.use(correlationMiddleware("refund-management"));
 
 function publishToQueue(channel, queue, content, headers = {}) {
   channel.sendToQueue(queue, content, {
@@ -56,8 +91,11 @@ async function readBody(response) {
   }
 }
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options = {}, correlationId = "") {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  });
   const body = await readBody(response);
 
   if (!response.ok) {
@@ -72,12 +110,12 @@ async function fetchJson(url, options = {}) {
   return body;
 }
 
-async function getPaymentByOrderId(orderId) {
-  return fetchJson(`${PAYMENT_SERVICE_URL}/payments/order/${encodeURIComponent(orderId)}`);
+async function getPaymentByOrderId(orderId, correlationId = "") {
+  return fetchJson(`${PAYMENT_SERVICE_URL}/payments/order/${encodeURIComponent(orderId)}`, {}, correlationId);
 }
 
-async function getPaymentById(paymentId) {
-  return fetchJson(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}`);
+async function getPaymentById(paymentId, correlationId = "") {
+  return fetchJson(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}`, {}, correlationId);
 }
 
 async function syncRefundRecord({
@@ -86,6 +124,7 @@ async function syncRefundRecord({
   refundStatus,
   refundAmount,
   refundReason,
+  correlationId = "",
 }) {
   return fetchJson(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund-record`, {
     method: "POST",
@@ -96,15 +135,15 @@ async function syncRefundRecord({
       refundAmount,
       refundReason,
     }),
-  });
+  }, correlationId);
 }
 
-async function resolveRefundContext(payload = {}) {
+async function resolveRefundContext(payload = {}, correlationId = "") {
   let payment = null;
 
   if (payload?.orderId) {
     try {
-      payment = await getPaymentByOrderId(payload.orderId);
+      payment = await getPaymentByOrderId(payload.orderId, correlationId);
     } catch (error) {
       if (!payload?.paymentId) {
         throw error;
@@ -113,7 +152,7 @@ async function resolveRefundContext(payload = {}) {
   }
 
   if (!payment && payload?.paymentId) {
-    payment = await getPaymentById(payload.paymentId);
+    payment = await getPaymentById(payload.paymentId, correlationId);
   }
 
   return {
@@ -211,6 +250,7 @@ async function executeRefund({
   paymentIntentId,
   amount,
   reason,
+  correlationId = "",
 }) {
   const result = await sendRefund({ paymentIntentId, amount, reason });
 
@@ -234,6 +274,7 @@ async function executeRefund({
         refundStatus: result.data?.status || "succeeded",
         refundAmount: Number(amount || 0) || 0,
         refundReason: reason || "",
+        correlationId,
       });
     }
   } catch (error) {
@@ -261,6 +302,7 @@ function sendToDlq(channel, msg, reason) {
 
 function publishRefundResult(channel, payload, override = {}) {
   const responseQueue = payload?.replyTo || RESULT_QUEUE;
+  const correlationId = getPayloadCorrelationId(payload);
   const resultPayload = {
     orderId: payload?.orderId || "",
     paymentId: payload?.paymentId || "",
@@ -271,11 +313,16 @@ function publishRefundResult(channel, payload, override = {}) {
     refundAmount: Number(payload?.refundAmount ?? payload?.amountTotal ?? 0) || 0,
     refundId: "",
     refundStatus: "failed",
-    correlationId: payload?.correlationId || null,
+    correlationId: correlationId || null,
     ...override,
   };
 
-  publishToQueue(channel, responseQueue, Buffer.from(JSON.stringify(resultPayload)));
+  publishToQueue(
+    channel,
+    responseQueue,
+    Buffer.from(JSON.stringify(resultPayload)),
+    correlationId ? { [CORRELATION_HEADER]: correlationId } : {}
+  );
 }
 
 app.get("/health", (req, res) => {
@@ -285,12 +332,13 @@ app.get("/health", (req, res) => {
 app.post("/refund-management/refund", async (req, res) => {
   try {
     const { orderId = "", paymentId = "", amountMinor, amount, reason = "" } = req.body || {};
+    const correlationId = req.correlationId || "";
 
     if (!orderId && !paymentId) {
       return res.status(400).json({ error: "orderId or paymentId is required" });
     }
 
-    const context = await resolveRefundContext({ orderId, paymentId });
+    const context = await resolveRefundContext({ orderId, paymentId }, correlationId);
     const resolvedPayment = context.payment;
     const resolvedPaymentId = context.paymentId;
     const paymentIntentId = context.paymentIntentId;
@@ -314,6 +362,7 @@ app.post("/refund-management/refund", async (req, res) => {
       paymentIntentId,
       amount: normalizedAmountMinor,
       reason: refundReason,
+      correlationId,
     });
 
     if (!refundResult.ok) {
@@ -371,15 +420,17 @@ async function startConsumer() {
     }
 
     const retryCount = msg.properties.headers?.["x-retry-count"] || 0;
-    const { amount, reason } = buildRefundRequest(payload);
+    const correlationId = getPayloadCorrelationId(payload, msg.properties.headers);
+    const queuePayload = { ...payload, correlationId };
+    const { amount, reason } = buildRefundRequest(queuePayload);
 
     let context;
     try {
-      context = await resolveRefundContext(payload);
+      context = await resolveRefundContext(queuePayload, correlationId);
     } catch (error) {
-      console.error("[refund-management] Failed to resolve payment context:", error.message);
+      console.error(`[refund-management] Failed to resolve payment context cid=${correlationId || "n/a"}:`, error.message);
       sendToDlq(channel, msg, "payment_lookup_failed");
-      publishRefundResult(channel, payload, {
+      publishRefundResult(channel, queuePayload, {
         refundStatus: "failed",
         error: error.message || "payment_lookup_failed",
       });
@@ -391,16 +442,16 @@ async function startConsumer() {
     const paymentIntentId = context.paymentIntentId;
 
     if (!paymentId) {
-      console.error("[refund-management] Missing paymentId; sending to DLQ");
+      console.error(`[refund-management] Missing paymentId; sending to DLQ cid=${correlationId || "n/a"}`);
       sendToDlq(channel, msg, "missing_payment_id");
       channel.ack(msg);
       return;
     }
 
     if (!paymentIntentId) {
-      console.error("[refund-management] Missing paymentIntentId; sending to DLQ");
+      console.error(`[refund-management] Missing paymentIntentId; sending to DLQ cid=${correlationId || "n/a"}`);
       sendToDlq(channel, msg, "missing_payment_intent_id");
-      publishRefundResult(channel, payload, {
+      publishRefundResult(channel, queuePayload, {
         paymentId,
         refundStatus: "failed",
         error: "Missing paymentIntentId",
@@ -409,7 +460,7 @@ async function startConsumer() {
       return;
     }
 
-    console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId}`);
+    console.log(`[refund-management] Attempt ${retryCount + 1} for paymentId=${paymentId} cid=${correlationId || "n/a"}`);
 
     try {
       const result = await executeRefund({
@@ -417,11 +468,12 @@ async function startConsumer() {
         paymentIntentId,
         amount,
         reason,
+        correlationId,
       });
 
       if (result.ok) {
-        console.log("[refund-management] Refund successful");
-        publishRefundResult(channel, payload, {
+        console.log(`[refund-management] Refund successful cid=${correlationId || "n/a"}`);
+        publishRefundResult(channel, queuePayload, {
           paymentId,
           refundId: result.refundId,
           refundStatus: result.refundStatus,
@@ -432,8 +484,8 @@ async function startConsumer() {
       }
 
       if (result.status >= 400 && result.status < 500) {
-        console.warn("[refund-management] Business failure (ack):", result.status, result.errorText);
-        publishRefundResult(channel, payload, {
+        console.warn(`[refund-management] Business failure cid=${correlationId || "n/a"} (ack):`, result.status, result.errorText);
+        publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: String(result.errorText || "").slice(0, 1000),
@@ -456,7 +508,7 @@ async function startConsumer() {
           "x-error": `refund_failed_${result.status}`,
           "x-response": String(result.errorText || "").slice(0, 1000),
         });
-        publishRefundResult(channel, payload, {
+        publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: `refund_failed_${result.status}`,
@@ -465,7 +517,7 @@ async function startConsumer() {
 
       channel.ack(msg);
     } catch (error) {
-      console.error("[refund-management] Network/system error:", error?.message || error);
+      console.error(`[refund-management] Network/system error cid=${correlationId || "n/a"}:`, error?.message || error);
 
       if (retryCount < MAX_RETRIES) {
         publishToQueue(channel, QUEUE, msg.content, {
@@ -478,7 +530,7 @@ async function startConsumer() {
           "x-retry-count": retryCount,
           "x-error": error?.message || String(error),
         });
-        publishRefundResult(channel, payload, {
+        publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: error?.message || String(error),

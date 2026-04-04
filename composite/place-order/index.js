@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import amqplib from "amqplib";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ const QUEUES = {
   REFUND_REQUEST: "refund.request",
   REFUND_RESULT: "refund.result",
 };
+const CORRELATION_HEADER = "x-correlation-id";
 
 let rabbitConnection = null;
 let rabbitChannel = null;
@@ -31,6 +33,47 @@ const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://l
 
 app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function createCorrelationId(scope = "place-order") {
+  return `${scope}:${randomUUID()}`;
+}
+
+function resolveCorrelationId(value, scope = "place-order") {
+  return String(value || "").trim() || createCorrelationId(scope);
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function getMessageCorrelationId(msg, payload, scope = "place-order") {
+  return (
+    getHeaderValue(msg?.properties?.headers, CORRELATION_HEADER) ||
+    String(payload?.correlationId || "").trim() ||
+    createCorrelationId(scope)
+  );
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = resolveCorrelationId(getHeaderValue(req.headers), serviceName);
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("place-order"));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -44,8 +87,11 @@ async function readBody(response) {
   try { return JSON.parse(raw); } catch { return raw; }
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options = {}, correlationId = "") {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  });
   const data = await readBody(response);
   if (!response.ok) {
     const err = new Error((data && data.error) || `Request failed (${response.status})`);
@@ -93,26 +139,28 @@ async function getRabbitChannel() {
   return rabbitChannel;
 }
 
-function buildCorrelationId(prefix, orderId) {
-  return `${prefix}:${String(orderId || "").trim()}:${Date.now()}`;
-}
-
-async function publishToQueue(queue, payload) {
+async function publishToQueue(queue, payload, correlationId = "") {
   const channel = await getRabbitChannel();
   channel.sendToQueue(queue, Buffer.from(JSON.stringify(payload)), {
     persistent: true,
     contentType: "application/json",
+    headers: withCorrelationHeaders({}, correlationId || payload?.correlationId || ""),
   });
-  console.log(`[place-order] Published to ${queue}:`, JSON.stringify(payload, null, 2));
+  console.log(
+    `[place-order] Published to ${queue} cid=${correlationId || payload?.correlationId || "n/a"}:`,
+    JSON.stringify(payload, null, 2)
+  );
 }
 
 // Fire-and-forget — never throws, never blocks
-function fireAndForget(url, body) {
+function fireAndForget(url, body, correlationId = "") {
   fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withCorrelationHeaders({ "Content-Type": "application/json" }, correlationId),
     body: JSON.stringify(body),
-  }).catch((err) => console.warn(`[fire-and-forget] ${url} failed:`, err.message));
+  }).catch((err) =>
+    console.warn(`[fire-and-forget] ${url} failed cid=${correlationId || "n/a"}:`, err.message)
+  );
 }
 
 function toMinorUnits(value) {
@@ -187,11 +235,15 @@ function normalizeRewardStatus(payload, stampsCount) {
   };
 }
 
-async function markRewardUsedIfNeeded(paymentId, orderId) {
+async function markRewardUsedIfNeeded(paymentId, orderId, correlationId = "") {
   if (!paymentId) return;
 
   try {
-    const payment = await fetchJson(`${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}`);
+    const payment = await fetchJson(
+      `${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}`,
+      {},
+      correlationId
+    );
     const reward = payment?.reward;
 
     if (!reward?.eligible) return;
@@ -205,19 +257,24 @@ async function markRewardUsedIfNeeded(paymentId, orderId) {
         restoreKey: reward?.restoreKey || "",
         source: reward?.source || "",
       }),
-    });
+    }, correlationId);
 
-    console.log(`[place-order] Reward usage recorded for order ${orderId}`);
+    console.log(`[place-order] Reward usage recorded for order ${orderId} cid=${correlationId || "n/a"}`);
   } catch (error) {
-    console.warn(`[place-order] Reward update failed for order ${orderId}:`, error.message);
+    console.warn(
+      `[place-order] Reward update failed for order ${orderId} cid=${correlationId || "n/a"}:`,
+      error.message
+    );
   }
 }
 
-async function getConfirmedOrderCount(userId) {
+async function getConfirmedOrderCount(userId, correlationId = "") {
   if (!userId) return 0;
 
   const historyResponse = await fetchJson(
-    `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=100`
+    `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=100`,
+    {},
+    correlationId
   );
 
   if (Number.isFinite(Number(historyResponse?.totalOrders))) {
@@ -230,12 +287,14 @@ async function getConfirmedOrderCount(userId) {
   return history.length;
 }
 
-async function getRewardStatus(userId) {
-  const stampsCount = await getConfirmedOrderCount(userId);
+async function getRewardStatus(userId, correlationId = "") {
+  const stampsCount = await getConfirmedOrderCount(userId, correlationId);
 
   try {
     const rewardPayload = await fetchJson(
-      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
+      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`,
+      {},
+      correlationId
     );
     return normalizeRewardStatus(rewardPayload, stampsCount);
   } catch (error) {
@@ -251,7 +310,7 @@ app.get("/health", (req, res) => {
 
 app.get("/orders/reward-status/:userId", async (req, res) => {
   try {
-    const reward = await getRewardStatus(req.params.userId);
+    const reward = await getRewardStatus(req.params.userId, req.correlationId);
     res.json({ success: true, reward });
   } catch (error) {
     res.status(500).json({ error: error.message || "Failed to fetch reward status" });
@@ -261,6 +320,7 @@ app.get("/orders/reward-status/:userId", async (req, res) => {
 // Step 3 — UI calls this to begin order process
 app.post("/orders/place", async (req, res) => {
   try {
+    const correlationId = req.correlationId;
     const {
       orderId: incomingOrderId,
       customerId: _customerId,
@@ -308,7 +368,7 @@ app.post("/orders/place", async (req, res) => {
     // orderId flows into Stripe metadata → consumer → order service
     const orderId = incomingOrderId || generateOrderId();
 
-    const reward = await getRewardStatus(customerId);
+    const reward = await getRewardStatus(customerId, correlationId);
     const multiplier = reward.eligible && Number(reward.discountPercent) > 0
       ? (100 - Number(reward.discountPercent)) / 100
       : 1;
@@ -339,19 +399,21 @@ app.post("/orders/place", async (req, res) => {
           cancelUrl,
           reward,
         }),
-      }
+      },
+      correlationId
     );
 
-    console.log(`[place-order] ✅ Checkout session created for order ${orderId}`);
+    console.log(`[place-order] ✅ Checkout session created for order ${orderId} cid=${correlationId}`);
 
     res.status(201).json({
       success: true,
       orderId,
       reward,
       payment: paymentResponse,
+      correlationId,
     });
   } catch (error) {
-    console.error("[place-order] ❌ /orders/place error:", error.message);
+    console.error(`[place-order] ❌ /orders/place error cid=${req.correlationId || "n/a"}:`, error.message);
     res.status(error.status || 500).json({ error: error.message || "Failed to place order" });
   }
 });
@@ -364,8 +426,9 @@ async function requestInventoryCheck({
   currency,
   amountTotal,
   items,
+  correlationId,
 }) {
-  const correlationId = buildCorrelationId("inventory", orderId);
+  const resolvedCorrelationId = resolveCorrelationId(correlationId, `inventory:${String(orderId || "").trim()}`);
   await publishToQueue(QUEUES.INVENTORY_CHECK, {
     orderId,
     paymentId,
@@ -374,10 +437,10 @@ async function requestInventoryCheck({
     currency: currency || "sgd",
     amountTotal,
     items,
-    correlationId,
+    correlationId: resolvedCorrelationId,
     replyTo: QUEUES.INVENTORY_RESULT,
-  });
-  return correlationId;
+  }, resolvedCorrelationId);
+  return resolvedCorrelationId;
 }
 
 async function requestRefund({
@@ -392,8 +455,9 @@ async function requestRefund({
   insufficientItems,
   refundAmount,
   amountTotal,
+  correlationId,
 }) {
-  const correlationId = buildCorrelationId("refund", orderId);
+  const resolvedCorrelationId = resolveCorrelationId(correlationId, `refund:${String(orderId || "").trim()}`);
   await publishToQueue(QUEUES.REFUND_REQUEST, {
     orderId,
     paymentId,
@@ -406,10 +470,10 @@ async function requestRefund({
     insufficientItems: Array.isArray(insufficientItems) ? insufficientItems : [],
     refundAmount,
     amountTotal,
-    correlationId,
+    correlationId: resolvedCorrelationId,
     replyTo: QUEUES.REFUND_RESULT,
-  });
-  return correlationId;
+  }, resolvedCorrelationId);
+  return resolvedCorrelationId;
 }
 
 async function processInventoryResultMessage(payload) {
@@ -424,9 +488,12 @@ async function processInventoryResultMessage(payload) {
     insufficientItems,
     refundAmount,
     amountTotal,
+    correlationId,
   } = payload || {};
 
-  console.log(`[place-order] 📦 Inventory result received for order ${orderId} — status: ${status}`);
+  console.log(
+    `[place-order] 📦 Inventory result received for order ${orderId} — status: ${status} cid=${correlationId || "n/a"}`
+  );
   console.log(`[place-order] Payload:`, JSON.stringify(payload, null, 2));
 
   if (!orderId || !paymentId || !userId || !status) {
@@ -451,8 +518,8 @@ async function processInventoryResultMessage(payload) {
         currency: currency || "sgd",
         status: "confirmed",
       }),
-    });
-    console.log(`[place-order] ✅ Order created:`, orderRes?.order?.orderId || orderId);
+    }, correlationId);
+    console.log(`[place-order] ✅ Order created cid=${correlationId || "n/a"}:`, orderRes?.order?.orderId || orderId);
 
     try {
       await fetchJson(`${PAYMENT_SERVICE_URL}/payments/log`, {
@@ -464,20 +531,23 @@ async function processInventoryResultMessage(payload) {
           amount: amountTotal,
           status: "completed",
         }),
-      });
-      console.log(`[place-order] ✅ Payment logged for order ${orderId}`);
+      }, correlationId);
+      console.log(`[place-order] ✅ Payment logged for order ${orderId} cid=${correlationId || "n/a"}`);
     } catch (error) {
-      console.warn(`[place-order] ⚠️ Payment log failed (non-fatal):`, error.message);
+      console.warn(
+        `[place-order] ⚠️ Payment log failed (non-fatal) cid=${correlationId || "n/a"}:`,
+        error.message
+      );
     }
 
-    await markRewardUsedIfNeeded(paymentId, orderId);
+    await markRewardUsedIfNeeded(paymentId, orderId, correlationId);
 
     fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
       userId,
       type: "ORDER_CONFIRMED",
       orderId,
-    });
-    console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId}`);
+    }, correlationId);
+    console.log(`[place-order] 📨 ORDER_CONFIRMED notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;
   }
 
@@ -497,6 +567,7 @@ async function processInventoryResultMessage(payload) {
       insufficientItems,
       refundAmount: amountTotal,
       amountTotal,
+      correlationId,
     });
     return;
   }
@@ -515,6 +586,7 @@ async function processInventoryResultMessage(payload) {
       insufficientItems,
       refundAmount,
       amountTotal,
+      correlationId,
     });
     return;
   }
@@ -532,9 +604,12 @@ async function processRefundResultMessage(payload) {
     refundId,
     refundStatus,
     insufficientItems,
+    correlationId,
   } = payload || {};
 
-  console.log(`[place-order] 💸 Refund result received for order ${orderId} — status: ${refundStatus}`);
+  console.log(
+    `[place-order] 💸 Refund result received for order ${orderId} — status: ${refundStatus} cid=${correlationId || "n/a"}`
+  );
   console.log(`[place-order] Payload:`, JSON.stringify(payload, null, 2));
 
   if (!orderId || !userId || !status) {
@@ -556,8 +631,8 @@ async function processRefundResultMessage(payload) {
       refundAmount,
       refundId,
       refundStatus,
-    });
-    console.log(`[place-order] 📨 ORDER_PARTIAL notification fired for ${userId}`);
+    }, correlationId);
+    console.log(`[place-order] 📨 ORDER_PARTIAL notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;
   }
 
@@ -569,8 +644,8 @@ async function processRefundResultMessage(payload) {
       refundAmount,
       refundId,
       refundStatus,
-    });
-    console.log(`[place-order] 📨 ORDER_REFUNDED notification fired for ${userId}`);
+    }, correlationId);
+    console.log(`[place-order] 📨 ORDER_REFUNDED notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;
   }
 
@@ -579,6 +654,7 @@ async function processRefundResultMessage(payload) {
 
 app.post("/orders/payment-confirmed", async (req, res) => {
   try {
+    const requestCorrelationId = req.correlationId;
     const {
       orderId,
       paymentId,
@@ -596,7 +672,7 @@ app.post("/orders/payment-confirmed", async (req, res) => {
       return res.status(400).json({ error: "items array is required" });
     }
 
-    const correlationId = await requestInventoryCheck({
+    const queuedCorrelationId = await requestInventoryCheck({
       orderId,
       paymentId,
       paymentIntentId,
@@ -604,6 +680,7 @@ app.post("/orders/payment-confirmed", async (req, res) => {
       currency,
       amountTotal,
       items,
+      correlationId: requestCorrelationId,
     });
 
     return res.json({
@@ -611,10 +688,13 @@ app.post("/orders/payment-confirmed", async (req, res) => {
       orderId,
       paymentId,
       queued: true,
-      correlationId,
+      correlationId: queuedCorrelationId,
     });
   } catch (error) {
-    console.error("[place-order] ❌ /orders/payment-confirmed error:", error.message);
+    console.error(
+      `[place-order] ❌ /orders/payment-confirmed error cid=${req.correlationId || "n/a"}:`,
+      error.message
+    );
     return res.status(error.status || 500).json({
       error: error.message || "Failed to queue inventory check",
     });
@@ -630,6 +710,7 @@ async function startRabbitConsumers() {
 
     try {
       const payload = JSON.parse(msg.content.toString());
+      payload.correlationId = getMessageCorrelationId(msg, payload, "inventory");
       await processInventoryResultMessage(payload);
       channel.ack(msg);
     } catch (error) {
@@ -643,6 +724,7 @@ async function startRabbitConsumers() {
 
     try {
       const payload = JSON.parse(msg.content.toString());
+      payload.correlationId = getMessageCorrelationId(msg, payload, "refund");
       await processRefundResultMessage(payload);
       channel.ack(msg);
     } catch (error) {

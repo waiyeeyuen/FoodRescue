@@ -8,9 +8,22 @@ import { createStripeCheckoutSession, createStripeRefund, stripe } from "../serv
 import { config } from "../utils/config.js";
 
 const PLACE_ORDER_SERVICE_URL = process.env.PLACE_ORDER_SERVICE_URL || "http://localhost:4001";
+const CORRELATION_HEADER = "x-correlation-id";
 
 function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function getSessionCorrelationId(session) {
+  return String(session?.metadata?.correlationId || "").trim();
 }
 
 async function readBody(response) {
@@ -116,6 +129,7 @@ export async function getPaymentByOrderId(req, res) {
 
 export async function createCheckoutSession(req, res) {
   try {
+    const correlationId = req.correlationId || "";
     const { orderId, userId, items, currency, successUrl, cancelUrl, reward } = req.body;
 
     if (!orderId || !userId || !items || !Array.isArray(items) || items.length === 0) {
@@ -131,12 +145,13 @@ export async function createCheckoutSession(req, res) {
     const finalSuccessUrl = successUrl || `${config.frontendSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`;
     const finalCancelUrl = cancelUrl || config.frontendCancelUrl;
 
-    console.log('[Checkout] Creating session for orderId:', orderId, '| userId:', userId);
+    console.log('[Checkout] Creating session for orderId:', orderId, '| userId:', userId, '| cid:', correlationId);
     console.log('[Checkout] Items:', JSON.stringify(items, null, 2));
     console.log('[Checkout] successUrl:', finalSuccessUrl);
 
     const session = await createStripeCheckoutSession({
       paymentId, orderId, userId,
+      correlationId,
       currency: currency || "sgd",
       items,
       successUrl: finalSuccessUrl,
@@ -157,6 +172,7 @@ export async function createCheckoutSession(req, res) {
       stripePaymentIntentId: null,
       checkoutUrl: session.url,
       source: "stripe_checkout",
+      correlationId,
       webhookEventType: "",
       refundStatus: "not_requested",
       refundId: "", refundAmount: 0, refundReason: "",
@@ -165,11 +181,11 @@ export async function createCheckoutSession(req, res) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log('[Checkout] ✅ Payment record saved to Firestore');
+    console.log('[Checkout] ✅ Payment record saved to Firestore cid=', correlationId);
 
-    res.status(201).json({ paymentId, status: "pending", checkoutUrl: session.url });
+    res.status(201).json({ paymentId, status: "pending", checkoutUrl: session.url, correlationId });
   } catch (error) {
-    console.error('[Checkout] ❌ Error:', error.message);
+    console.error('[Checkout] ❌ Error cid=', req.correlationId || "n/a", ':', error.message);
     res.status(500).json({ error: "Failed to create checkout session", details: error.message });
   }
 }
@@ -286,7 +302,14 @@ export async function logPayment(req, res) {
   }
 }
 
-async function notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session }) {
+async function notifyPlaceOrderIfNeeded({
+  paymentId,
+  orderId,
+  userId,
+  paymentRecord,
+  session,
+  correlationId = "",
+}) {
   if (!paymentId || !orderId) return { notified: false, reason: 'missing_data' };
 
   if (
@@ -337,10 +360,18 @@ async function notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRec
     items,
   };
 
-  console.log('[Payment] Notifying Place Order:', JSON.stringify(requestPayload, null, 2));
+  const resolvedCorrelationId =
+    String(correlationId || "").trim() ||
+    String(paymentRecord?.correlationId || "").trim() ||
+    getSessionCorrelationId(session);
+
+  console.log(
+    `[Payment] Notifying Place Order cid=${resolvedCorrelationId || "n/a"}:`,
+    JSON.stringify(requestPayload, null, 2)
+  );
   const response = await fetch(`${PLACE_ORDER_SERVICE_URL}/orders/payment-confirmed`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCorrelationHeaders({ 'Content-Type': 'application/json' }, resolvedCorrelationId),
     body: JSON.stringify(requestPayload),
   });
   const responseBody = await readBody(response);
@@ -364,6 +395,9 @@ async function notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRec
   if (!paymentRecord?.stripePaymentIntentId && paymentIntentId) {
     paymentUpdates.stripePaymentIntentId = paymentIntentId;
   }
+  if (!paymentRecord?.correlationId && resolvedCorrelationId) {
+    paymentUpdates.correlationId = resolvedCorrelationId;
+  }
 
   await createOrUpdatePayment(paymentId, paymentUpdates);
 
@@ -372,6 +406,7 @@ async function notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRec
 
 export async function confirmCheckoutSession(req, res) {
   try {
+    const requestCorrelationId = req.correlationId || "";
     const { sessionId } = req.body || {};
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId is required' });
@@ -396,11 +431,16 @@ export async function confirmCheckoutSession(req, res) {
     }
 
     const existingPayment = await getPaymentByIdFromDb(paymentId);
+    const correlationId =
+      requestCorrelationId ||
+      getSessionCorrelationId(session) ||
+      String(existingPayment?.correlationId || "").trim();
     const preserveRefundState = hasRefundState(existingPayment);
     const paymentUpdates = {
       stripeSessionId: session.id,
       stripePaymentIntentId:
         session.payment_intent || existingPayment?.stripePaymentIntentId || null,
+      correlationId,
     };
 
     if (!preserveRefundState) {
@@ -418,7 +458,14 @@ export async function confirmCheckoutSession(req, res) {
     }
 
     const paymentRecord = await retryGetPayment(paymentId);
-    const result = await notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+    const result = await notifyPlaceOrderIfNeeded({
+      paymentId,
+      orderId,
+      userId,
+      paymentRecord,
+      session,
+      correlationId,
+    });
 
     if (!result.notified && result.reason !== 'already_notified') {
       return res.status(500).json({ error: 'Failed to notify place-order', reason: result.reason });
@@ -441,6 +488,7 @@ export async function confirmCheckoutSession(req, res) {
 export async function handleStripeWebhook(req, res) {
   const signature = req.headers["stripe-signature"];
   let event;
+  const requestCorrelationId = req.correlationId || "";
 
   try {
     event = stripe.webhooks.constructEvent(req.body, signature, config.stripeWebhookSecret);
@@ -449,7 +497,7 @@ export async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 
-  console.log('[Webhook] Event received:', event.type);
+  console.log('[Webhook] Event received:', event.type, '| cid:', requestCorrelationId || "n/a");
 
   try {
     switch (event.type) {
@@ -459,11 +507,14 @@ export async function handleStripeWebhook(req, res) {
         const paymentId = session.metadata?.paymentId;
         const orderId   = session.metadata?.orderId;
         const userId    = session.metadata?.userId;
+        const correlationId =
+          requestCorrelationId ||
+          getSessionCorrelationId(session);
 
         console.log('==============================');
         console.log('[Webhook] ✅ checkout.session.completed received');
         console.log('[Webhook] Session ID:', session.id);
-        console.log('[Webhook] Metadata:', { paymentId, orderId, userId });
+        console.log('[Webhook] Metadata:', { paymentId, orderId, userId, correlationId });
         console.log('==============================');
 
         if (paymentId) {
@@ -472,7 +523,9 @@ export async function handleStripeWebhook(req, res) {
           const paymentUpdates = {
             stripeSessionId: session.id,
             stripePaymentIntentId:
-              session.payment_intent || existingPayment?.stripePaymentIntentId || null
+              session.payment_intent || existingPayment?.stripePaymentIntentId || null,
+            correlationId:
+              correlationId || String(existingPayment?.correlationId || "").trim(),
           };
 
           if (!preserveRefundState) {
@@ -496,17 +549,24 @@ export async function handleStripeWebhook(req, res) {
 
         if (orderId) {
           try {
-            const result = await notifyPlaceOrderIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+            const result = await notifyPlaceOrderIfNeeded({
+              paymentId,
+              orderId,
+              userId,
+              paymentRecord,
+              session,
+              correlationId,
+            });
             if (result.notified) {
-              console.log('[Webhook] ✅ Place Order notified');
+              console.log('[Webhook] ✅ Place Order notified cid=', correlationId || "n/a");
             } else {
-              console.log('[Webhook] Skipped Place Order notification:', result.reason);
+              console.log('[Webhook] Skipped Place Order notification:', result.reason, '| cid:', correlationId || "n/a");
               if (result.reason !== 'already_notified') {
                 throw new Error(`place_order_notify_${result.reason}`);
               }
             }
           } catch (err) {
-            console.error('[Webhook] ❌ Place Order notification failed:', err);
+            console.error('[Webhook] ❌ Place Order notification failed cid=', correlationId || "n/a", ':', err);
             throw err;
           }
         } else {

@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { randomUUID } from "crypto";
 import { db } from "../firebase/firebaseAdmin.js";
 
 const app = express();
@@ -14,9 +15,36 @@ const RESTORED_REWARDS = db.collection("reward_restorations");
 app.use(
   cors({
     origin: ["http://localhost:3000", "http://localhost:5173"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"],
   })
 );
 app.use(express.json());
+const CORRELATION_HEADER = "x-correlation-id";
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`;
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("reward"));
 
 function getField(obj, ...keys) {
   for (const key of keys) {
@@ -141,8 +169,10 @@ async function getActiveRestoredReward(userId) {
   return matches[0] || null;
 }
 
-async function fetchRewardEligibility(userId) {
-  const response = await fetch(`${getRewardBaseUrl()}/eligibility?UserId=${encodeURIComponent(userId)}`);
+async function fetchRewardEligibility(userId, correlationId = "") {
+  const response = await fetch(`${getRewardBaseUrl()}/eligibility?UserId=${encodeURIComponent(userId)}`, {
+    headers: withCorrelationHeaders({}, correlationId),
+  });
   const rawText = await response.text();
 
   let data = null;
@@ -180,7 +210,7 @@ app.get("/reward/eligibility/:userId", async (req, res) => {
       });
     }
 
-    const { response, data } = await fetchRewardEligibility(userId);
+    const { response, data } = await fetchRewardEligibility(userId, req.correlationId);
     const parsed = parseEligibilityPayload(data);
 
     if (response.ok && parsed.eligible !== null) {
@@ -258,7 +288,7 @@ app.post("/reward/update", async (req, res) => {
 
     const response = await fetch(`${getRewardBaseUrl()}/UpdateStatus`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withCorrelationHeaders({ "Content-Type": "application/json" }, req.correlationId),
       body: JSON.stringify({ UserId: userId, VoucherId: voucherId || "" }),
     });
     const rawText = await response.text();
