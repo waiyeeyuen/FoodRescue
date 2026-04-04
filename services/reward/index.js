@@ -148,67 +148,6 @@ const swaggerOptions = {
           },
         },
       },
-      "/reward/restore": {
-        post: {
-          tags: ["Reward"],
-          summary: "Restore a reward voucher",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["userId"],
-                  properties: {
-                    userId: { type: "string", example: "user_123" },
-                    voucherId: { type: "string", example: "restored_user_123" },
-                    restoreKey: { type: "string", example: "restored_user_123_1710000000000" },
-                    sourceOrderIds: { type: "array", items: { type: "string" } },
-                    sourcePaymentIds: { type: "array", items: { type: "string" } },
-                    reason: { type: "string", example: "refund_restored_voucher" },
-                    listingId: { type: "string", example: "listing_456" },
-                    discountPercent: { type: "number", example: 20 },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            201: {
-              description: "Reward voucher restored",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      success: { type: "boolean" },
-                      restoreKey: { type: "string" },
-                      voucherId: { type: "string" },
-                      source: { type: "string" },
-                    },
-                  },
-                },
-              },
-            },
-            400: {
-              description: "Invalid request",
-              content: {
-                "application/json": {
-                  schema: { $ref: "#/components/schemas/ErrorResponse" },
-                },
-              },
-            },
-            500: {
-              description: "Server error",
-              content: {
-                "application/json": {
-                  schema: { $ref: "#/components/schemas/ErrorResponse" },
-                },
-              },
-            },
-          },
-        },
-      },
     },
   },
   apis: [],
@@ -504,55 +443,6 @@ app.post("/reward/update", async (req, res) => {
     res.status(response.status).json(data);
   } catch (error) {
     res.status(500).json({ error: error.message || "Failed to update reward status" });
-  }
-});
-
-app.post("/reward/restore", async (req, res) => {
-  const {
-    userId,
-    voucherId = "",
-    restoreKey = "",
-    sourceOrderIds = [],
-    sourcePaymentIds = [],
-    reason = "refund_restored_voucher",
-    listingId = "",
-    discountPercent = DISCOUNT_PERCENT,
-  } = req.body || {};
-
-  if (!userId) {
-    return res.status(400).json({ error: "userId is required" });
-  }
-
-  try {
-    const docId =
-      String(restoreKey || "").trim() ||
-      `restored_${String(userId).trim()}_${Date.now()}`;
-    const restoredVoucherId =
-      String(voucherId || "").trim() || `restored_${String(userId).trim()}`;
-
-    const payload = {
-      userId: String(userId).trim(),
-      voucherId: restoredVoucherId,
-      discountPercent: Number(discountPercent || DISCOUNT_PERCENT) || DISCOUNT_PERCENT,
-      status: "active",
-      restoreReason: String(reason || "refund_restored_voucher"),
-      listingId: String(listingId || ""),
-      sourceOrderIds: Array.isArray(sourceOrderIds) ? sourceOrderIds : [],
-      sourcePaymentIds: Array.isArray(sourcePaymentIds) ? sourcePaymentIds : [],
-      restoredAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    };
-
-    await RESTORED_REWARDS.doc(docId).set(payload, { merge: true });
-
-    return res.status(201).json({
-      success: true,
-      restoreKey: docId,
-      voucherId: restoredVoucherId,
-      source: "restored-voucher",
-    });
-  } catch (error) {
-    return res.status(500).json({ error: error.message || "Failed to restore reward voucher" });
   }
 });
 
