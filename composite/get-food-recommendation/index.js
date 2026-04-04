@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
 import { randomUUID } from "crypto";
 
 dotenv.config();
@@ -13,6 +15,161 @@ const INVENTORY_SERVICE_URL = process.env.INVENTORY_SERVICE_URL || "http://local
 const REWARD_SERVICE_URL = process.env.REWARD_SERVICE_URL || "http://localhost:3005";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const CORRELATION_HEADER = "x-correlation-id";
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Get Food Recommendation Composite API",
+      version: "1.0.0",
+      description:
+        "Aggregates order history, inventory, reward eligibility, and Gemini ranking to return food recommendations.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct composite-get-food-recommendation service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [{ name: "Recommendations", description: "Recommendation endpoints" }],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string" },
+            details: { nullable: true },
+          },
+        },
+        RecommendationResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            userId: { type: "string" },
+            stampsCount: { type: "number" },
+            rewardEligibility: { type: "object" },
+            signals: { type: "object" },
+            gemini: { type: "object" },
+            recommendedListings: {
+              type: "array",
+              items: { type: "object" },
+            },
+            fallbackListings: {
+              type: "array",
+              items: { type: "object" },
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      "/health": {
+        get: {
+          tags: ["Recommendations"],
+          summary: "Health check",
+          responses: {
+            200: {
+              description: "Service health status",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      status: { type: "string", example: "ok" },
+                      service: {
+                        type: "string",
+                        example: "composite-get-food-recommendation",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/recommendations/{userId}": {
+        get: {
+          tags: ["Recommendations"],
+          summary: "Get food recommendations for a user",
+          description:
+            "Gateway copy-paste URL: http://localhost:8000/recommendations/{userId}",
+          parameters: [
+            {
+              in: "path",
+              name: "userId",
+              required: true,
+              schema: { type: "string", example: "user_123" },
+            },
+            {
+              in: "query",
+              name: "includeActive",
+              required: false,
+              schema: { type: "boolean", default: true },
+            },
+            {
+              in: "query",
+              name: "maxListings",
+              required: false,
+              schema: { type: "integer", default: 4, minimum: 1, maximum: 200 },
+            },
+            {
+              in: "query",
+              name: "maxSignals",
+              required: false,
+              schema: { type: "integer", default: 5, minimum: 1, maximum: 20 },
+            },
+            {
+              in: "query",
+              name: "listingIds",
+              required: false,
+              schema: {
+                type: "string",
+                example: "listing1,listing2",
+                description: "Comma-separated listing IDs to filter ranking candidates.",
+              },
+            },
+            {
+              in: "query",
+              name: "noCache",
+              required: false,
+              schema: {
+                type: "boolean",
+                default: false,
+                description: "Bypass Gemini cache for this request.",
+              },
+            },
+          ],
+          responses: {
+            200: {
+              description: "Recommendations generated successfully",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/RecommendationResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Unexpected server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 console.log("Gemini key loaded:", GEMINI_API_KEY?.slice(0, 8) + "...");
 
@@ -52,6 +209,15 @@ function correlationMiddleware(serviceName) {
 }
 
 app.use(correlationMiddleware("get-food-recommendation"));
+
+app.get("/get-food-recommendation-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use(
+  "/get-food-recommendation-api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec)
+);
 
 const geminiCache = new Map();
 const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
