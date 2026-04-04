@@ -2,6 +2,8 @@ import express from 'express'
 import cors from 'cors'
 import { randomUUID } from 'crypto'
 import { db } from './firebaseAdmin.js'
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
 
 const app = express()
 const ACCOUNT_SERVICE_URL =
@@ -22,6 +24,293 @@ const CORRELATION_HEADER = 'x-correlation-id'
 
 app.use(cors(corsOptions))
 app.use(express.json())
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Order Service API",
+      version: "1.0.0",
+      description:
+        "Handles order creation, retrieval, restaurant fulfillment, refunds, and recommendation history with correlation tracking.",
+    },
+
+    servers: [
+      {
+        url: "http://localhost:3004",
+        description: "Order Service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API Gateway",
+      },
+    ],
+
+    tags: [
+      { name: "Order", description: "Order operations" },
+      { name: "Restaurant", description: "Restaurant fulfillment view" },
+      { name: "Refund", description: "Refund-related operations" },
+      { name: "Recommendation", description: "Customer analytics & history" },
+      { name: "Health", description: "Service health check" },
+    ],
+
+    paths: {
+
+      "/orders": {
+        post: {
+          tags: ["Order"],
+          summary: "Create Order",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["customerId", "items", "totalPrice"],
+                  properties: {
+                    orderId: { type: "string" },
+                    customerId: { type: "string" },
+                    items: {
+                      type: "array",
+                      items: { type: "object" },
+                    },
+                    totalPrice: { type: "number" },
+                    notes: { type: "string" },
+                    status: { type: "string" },
+                    currency: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            201: {
+              description: "Order created successfully",
+            },
+            400: {
+              description: "Validation failed (missing fields or invalid data)",
+            },
+            500: {
+              description: "Server error",
+            },
+          },
+        },
+
+        get: {
+          tags: ["Order"],
+          summary: "Get All Orders",
+          parameters: [
+            { name: "customerId", in: "query", schema: { type: "string" } },
+            { name: "status", in: "query", schema: { type: "string" } },
+            { name: "limit", in: "query", schema: { type: "integer", default: 50 } },
+            { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
+          ],
+          responses: {
+            200: { description: "Orders retrieved with pagination" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/{orderId}": {
+        get: {
+          tags: ["Order"],
+          summary: "Get Specific Order",
+          parameters: [
+            {
+              name: "orderId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            200: { description: "Order retrieved" },
+            404: { description: "Order not found" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/{orderId}/status": {
+        patch: {
+          tags: ["Order"],
+          summary: "Update Order Status",
+          parameters: [
+            {
+              name: "orderId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["status"],
+                  properties: {
+                    status: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "Status updated successfully" },
+            400: { description: "Missing status" },
+            404: { description: "Order not found" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/{orderId}/items/{itemId}/status": {
+        patch: {
+          tags: ["Order"],
+          summary: "Update Item Status (Fulfillment / Refund)",
+          parameters: [
+            {
+              name: "orderId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "itemId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["status"],
+                  properties: {
+                    status: { type: "string" },
+                    restaurantId: { type: "string" },
+                    restaurantName: { type: "string" },
+                    reason: { type: "string" },
+                    refundAmount: { type: "number" },
+                    paymentId: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "Item status updated and order status recalculated" },
+            400: { description: "Missing status" },
+            404: { description: "Order or item not found" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/restaurant/{restaurantId}": {
+        get: {
+          tags: ["Restaurant"],
+          summary: "Get Orders for Restaurant",
+          parameters: [
+            {
+              name: "restaurantId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+            { name: "restaurantName", in: "query", schema: { type: "string" } },
+            { name: "status", in: "query", schema: { type: "string" } },
+            { name: "limit", in: "query", schema: { type: "integer", default: 100 } },
+            { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
+          ],
+          responses: {
+            200: { description: "Filtered restaurant orders with counts" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/listings/{listingId}/affected": {
+        get: {
+          tags: ["Refund"],
+          summary: "Get Refundable Orders for Listing",
+          parameters: [
+            {
+              name: "listingId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+            { name: "restaurantId", in: "query", schema: { type: "string" } },
+            { name: "restaurantName", in: "query", schema: { type: "string" } },
+            {
+              name: "includeCompleted",
+              in: "query",
+              schema: { type: "string", enum: ["true", "false"] },
+            },
+          ],
+          responses: {
+            200: { description: "Refundable orders with aggregated refund amounts" },
+            400: { description: "listingId is required" },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/orders/customer/{customerId}/history": {
+        get: {
+          tags: ["Recommendation"],
+          summary: "Get Customer Order History",
+          parameters: [
+            {
+              name: "customerId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "limit",
+              in: "query",
+              schema: { type: "integer", default: 20 },
+            },
+          ],
+          responses: {
+            200: {
+              description:
+                "Returns order history with frequency-based recommendations",
+            },
+            500: { description: "Server error" },
+          },
+        },
+      },
+
+      "/health": {
+        get: {
+          tags: ["Health"],
+          summary: "Health Check",
+          responses: {
+            200: { description: "Service is running" },
+          },
+        },
+      },
+    },
+  },
+
+  apis: [],
+};
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use(cors(corsOptions))
+app.use(express.json())
+
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.get("/hello", (req, res) => res.send("hello"));
+
 
 function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
   const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
@@ -802,6 +1091,7 @@ app.get('/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3004;
+
 app.listen(PORT, () => {
   console.log(`Order service running on port ${PORT}`);
 });
