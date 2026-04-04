@@ -363,44 +363,46 @@ export default function UserHome() {
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadListings() {
+    async function loadInventoryListings() {
       setListingsLoading(true);
-      setRecommendationsLoading(Boolean(user?.id));
       setListingsError(null);
-      setRecommendationsError(null);
 
-      const inventoryPromise = fetch(`${inventoryServiceUrl}/inventory/active`, {
-        signal: controller.signal,
-      })
-        .then(async (inventoryRes) => {
-          if (!inventoryRes.ok) {
-            let message = 'Failed to load active listings';
-            try {
-              const body = await inventoryRes.json();
-              message = body?.error || message;
-            } catch {}
-            throw new Error(message);
-          }
-
-          const inventoryData = await inventoryRes.json();
-          return Array.isArray(inventoryData?.data)
-            ? inventoryData.data
-            : Array.isArray(inventoryData)
-              ? inventoryData
-              : [];
-        })
-        .then((inventoryListings) => {
-          if (controller.signal.aborted) return;
-          setActiveListings(inventoryListings);
-        })
-        .catch((e) => {
-          if (e?.name === 'AbortError' || controller.signal.aborted) return;
-          setListingsError(e?.message || 'Failed to load active listings');
-          setActiveListings([]);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setListingsLoading(false);
+      try {
+        const inventoryRes = await fetch(`${inventoryServiceUrl}/inventory/active`, {
+          signal: controller.signal,
         });
+
+        if (!inventoryRes.ok) {
+          let message = 'Failed to load active listings';
+          try {
+            const body = await inventoryRes.json();
+            message = body?.error || message;
+          } catch {}
+          throw new Error(message);
+        }
+
+        const inventoryData = await inventoryRes.json();
+        const inventoryListings = Array.isArray(inventoryData?.data)
+          ? inventoryData.data
+          : Array.isArray(inventoryData)
+            ? inventoryData
+            : [];
+
+        if (!controller.signal.aborted) {
+          setActiveListings(inventoryListings);
+        }
+      } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) return;
+        setListingsError(e?.message || 'Failed to load active listings');
+        setActiveListings([]);
+      } finally {
+        if (!controller.signal.aborted) setListingsLoading(false);
+      }
+    }
+
+    async function loadRecommendations() {
+      setRecommendationsLoading(Boolean(user?.id));
+      setRecommendationsError(null);
 
       const recommendationsPromise = user?.id
         ? fetch(
@@ -481,17 +483,18 @@ export default function UserHome() {
           });
 
       try {
-        await Promise.all([inventoryPromise, recommendationsPromise]);
+        await recommendationsPromise;
       } catch (e) {
         if (e?.name === 'AbortError') return;
       }
     }
 
-    loadListings();
+    loadInventoryListings();
+    loadRecommendations();
 
-    const handleFocus = () => loadListings();
+    const handleFocus = () => loadInventoryListings();
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') loadListings();
+      if (document.visibilityState === 'visible') loadInventoryListings();
     };
 
     window.addEventListener('focus', handleFocus);
