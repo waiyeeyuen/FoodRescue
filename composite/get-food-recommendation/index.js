@@ -35,7 +35,10 @@ const swaggerOptions = {
         description: "Kong API gateway",
       },
     ],
-    tags: [{ name: "Recommendations", description: "Recommendation endpoints" }],
+    tags: [
+      { name: "Recommendations", description: "Recommendation endpoints" },
+      { name: "Health", description: "Service health check" },
+    ],
     components: {
       schemas: {
         ErrorResponse: {
@@ -69,7 +72,7 @@ const swaggerOptions = {
     paths: {
       "/health": {
         get: {
-          tags: ["Recommendations"],
+          tags: ["Health"],
           summary: "Health check",
           responses: {
             200: {
