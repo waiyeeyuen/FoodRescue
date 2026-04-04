@@ -43,6 +43,10 @@ FoodRescue addresses this by:
 
 ## User Scenarios
 
+### User Scenario Videos
+
+https://youtu.be/MrNy8Xkz2WM
+
 ### Scenario 1: Get Food Recommendation
 
 The `get-food-recommendation` composite orchestrates:
