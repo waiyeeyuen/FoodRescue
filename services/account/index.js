@@ -1,6 +1,5 @@
 import express from 'express'
 import cors from 'cors'
-import { randomUUID } from 'crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import swaggerJsdoc from 'swagger-jsdoc'
@@ -84,6 +83,98 @@ const swaggerOptions = {
             value: { type: "number" },
           },
         },
+        AuthUser: {
+          type: "object",
+          properties: {
+            id: { type: "string", example: "abc123userId" },
+            username: { type: "string", example: "johndoe" },
+            email: { type: "string", example: "john@example.com" },
+          },
+        },
+        AuthRestaurant: {
+          type: "object",
+          properties: {
+            id: { type: "string", example: "18CXbYrzy0o2v5BbHEUq" },
+            restaurantName: { type: "string", example: "Korean Jap Bites" },
+            email: { type: "string", example: "restaurant@example.com" },
+          },
+        },
+        AuthResponse: {
+          type: "object",
+          properties: {
+            token: { type: "string", description: "JWT token valid for 7 days", example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+            user: { $ref: "#/components/schemas/AuthUser" },
+          },
+        },
+        AuthRestaurantResponse: {
+          type: "object",
+          properties: {
+            token: { type: "string", description: "JWT token valid for 7 days", example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+            user: { $ref: "#/components/schemas/AuthRestaurant" },
+          },
+        },
+        NotificationPreferences: {
+          type: "object",
+          properties: {
+            inAppEnabled: { type: "boolean", description: "Always true", example: true },
+            smsEnabled: { type: "boolean", example: false },
+          },
+        },
+        UserProfile: {
+          type: "object",
+          properties: {
+            id: { type: "string", example: "abc123userId" },
+            username: { type: "string", example: "johndoe" },
+            email: { type: "string", example: "john@example.com" },
+            city: { type: "string", example: "" },
+            phone: { type: "string", example: "+6591234567" },
+            co2: { type: "number", example: 2.2, description: "Legacy field — mirrors impact.co2KgSaved" },
+            water: { type: "number", example: 162, description: "Legacy field — mirrors impact.waterLitersSaved" },
+            days: { type: "number", example: 2, description: "Legacy field — mirrors impact.daysSaved" },
+            createdAt: { type: "string", format: "date-time", nullable: true },
+            updatedAt: { type: "string", format: "date-time", nullable: true },
+            notificationPreferences: { $ref: "#/components/schemas/NotificationPreferences" },
+            impact: { $ref: "#/components/schemas/UserImpact" },
+          },
+        },
+        RestaurantProfile: {
+          type: "object",
+          properties: {
+            id: { type: "string", example: "18CXbYrzy0o2v5BbHEUq" },
+            restaurantName: { type: "string", example: "Korean Jap Bites" },
+            email: { type: "string", example: "restaurant@example.com" },
+            city: { type: "string", example: "" },
+            co2: { type: "number", example: 2.2 },
+            water: { type: "number", example: 162 },
+            days: { type: "number", example: 2 },
+            createdAt: { type: "string", format: "date-time", nullable: true },
+            updatedAt: { type: "string", format: "date-time", nullable: true },
+            impact: {
+              type: "object",
+              properties: {
+                mealsRescued: { type: "number" },
+                co2KgSaved: { type: "number" },
+                waterLitersSaved: { type: "number" },
+                revenueRecovered: { type: "number" },
+                ordersFulfilled: { type: "number" },
+                repeatCustomers: { type: "number" },
+                daysSaved: { type: "number" },
+                completedDayKeys: { type: "array", items: { type: "string" } },
+                lastSuccessfulOrderAt: { type: "string", format: "date-time", nullable: true },
+                leaderboardEligible: { type: "boolean" },
+              },
+            },
+          },
+        },
+        NotificationSettingsResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            account: { $ref: "#/components/schemas/UserProfile" },
+            notificationPreferences: { $ref: "#/components/schemas/NotificationPreferences" },
+            phone: { type: "string", example: "+6591234567" },
+          },
+        },
       },
     },
     paths: {
@@ -110,7 +201,10 @@ const swaggerOptions = {
             },
           },
           responses: {
-            201: { description: "User created successfully, returns JWT token" },
+            201: {
+              description: "User created successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/AuthResponse" } } },
+            },
             400: { description: "Missing fields", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             409: { description: "Email already registered", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
@@ -140,7 +234,10 @@ const swaggerOptions = {
             },
           },
           responses: {
-            201: { description: "Restaurant created successfully, returns JWT token" },
+            201: {
+              description: "Restaurant created successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/AuthRestaurantResponse" } } },
+            },
             400: { description: "Missing fields", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             409: { description: "Email already registered", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
@@ -169,7 +266,10 @@ const swaggerOptions = {
             },
           },
           responses: {
-            200: { description: "Login successful, returns JWT token" },
+            200: {
+              description: "Login successful",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/AuthResponse" } } },
+            },
             400: { description: "Missing fields", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             401: { description: "Invalid email or password", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
@@ -198,7 +298,10 @@ const swaggerOptions = {
             },
           },
           responses: {
-            200: { description: "Login successful, returns JWT token" },
+            200: {
+              description: "Login successful",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/AuthRestaurantResponse" } } },
+            },
             400: { description: "Missing fields", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             401: { description: "Invalid email or password", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
@@ -260,7 +363,7 @@ const swaggerOptions = {
                 },
               },
             },
-            500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+            500: { description: "Server error (non-quota failures only — quota errors return 200 with stale: true and empty arrays)", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           },
         },
       },
@@ -274,7 +377,10 @@ const swaggerOptions = {
             { name: "id", in: "path", required: true, schema: { type: "string", example: "abc123userId" } },
           ],
           responses: {
-            200: { description: "User profile data" },
+            200: {
+              description: "User profile data",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/UserProfile" } } },
+            },
             404: { description: "Not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           },
@@ -290,7 +396,10 @@ const swaggerOptions = {
             { name: "id", in: "path", required: true, schema: { type: "string", example: "18CXbYrzy0o2v5BbHEUq" } },
           ],
           responses: {
-            200: { description: "Restaurant profile data" },
+            200: {
+              description: "Restaurant profile data",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/RestaurantProfile" } } },
+            },
             404: { description: "Not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
             500: { description: "Server error", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           },
@@ -319,7 +428,10 @@ const swaggerOptions = {
             },
           },
           responses: {
-            200: { description: "Notification settings updated successfully" },
+            200: {
+              description: "Notification settings updated successfully",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationSettingsResponse" } } },
+            },
             400: {
               description: "Validation error (e.g., missing phone when enabling SMS, invalid phone format)",
               content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } },
@@ -581,28 +693,10 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
+  allowedHeaders: ["Content-Type", "Authorization"]
 };
-const CORRELATION_HEADER = 'x-correlation-id'
-
-function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
-  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
-  return String(Array.isArray(value) ? value[0] : value || '').trim()
-}
-
-function correlationMiddleware(serviceName) {
-  return (req, res, next) => {
-    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`
-    req.correlationId = correlationId
-    res.setHeader(CORRELATION_HEADER, correlationId)
-    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`)
-    next()
-  }
-}
-
 app.use(cors(corsOptions))
 app.use(express.json())
-app.use(correlationMiddleware('account'))
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
 // ─── Constants ────────────────────────────────────────────────────────────────
