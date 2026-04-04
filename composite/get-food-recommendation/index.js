@@ -316,6 +316,7 @@ app.get("/recommendations/:userId", async (req, res) => {
     console.log("Rewards hit! reward eligibility:", false);
   }
 
+  // Step 4 — Gemini reranking (with cache)
   const { topNames, topCategories } = pickTopSignals(orderHistory, maxSignals);
   console.log("Signals:", { topNames, topCategories });
 
@@ -327,7 +328,7 @@ app.get("/recommendations/:userId", async (req, res) => {
       })
     : [];
 
-  // Step 4 — Gemini reranking (with cache)
+  
   const bypassCache = shouldBypassCache(req);
   const signalsKey = stableSignalsKey(topNames, topCategories);
   const cacheKey = `${userId}::${stampsCount}::${signalsKey}::${requestedListingIds.join(",") || "*"}`;
