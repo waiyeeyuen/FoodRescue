@@ -3,6 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import amqplib from "amqplib";
 import { randomUUID } from "crypto";
+import swaggerUi from "swagger-ui-express";
+import swaggerJsdoc from "swagger-jsdoc";
 
 dotenv.config();
 
@@ -31,6 +33,141 @@ let rabbitChannel = null;
 const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
   .split(",").map((v) => v.trim()).filter(Boolean);
 
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Place Order Service API",
+      version: "1.0.0",
+      description: "Composite service for placing orders, handling payment, inventory and rewards"
+    },
+    paths: {
+    "/health": {
+      get: {
+        summary: "Health check",
+        responses: {
+          200: {
+            description: "Service is running",
+            content: {
+              "application/json": {
+                example: {
+                  status: "ok",
+                  service: "composite-place-order"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "/orders/reward-status/{userId}": {
+      get: {
+        summary: "Get reward status",
+        parameters: [
+          {
+            name: "userId",
+            in: "path",
+            required: true,
+            schema: { type: "string" }
+          }
+        ],
+        responses: {
+          200: {
+            description: "Reward status retrieved",
+            content: {
+              "application/json": {
+                example: {
+                  success: true,
+                  reward: {
+                    eligible: false,
+                    discountPercent: 0
+                  }
+                }
+              }
+            }
+          },
+          500: {
+            description: "Server error"
+          }
+        }
+      }
+    },
+
+    "/orders/place": {
+      post: {
+        summary: "Place Order",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                customerId: "cust_001",
+                items: [
+                  {
+                    itemId: "RES123_ITEM1",
+                    quantity: 2,
+                    price: 5.99
+                  }
+                ]
+              }
+            }
+          }
+        },
+        responses: {
+          201: {
+            description: "Order placed successfully"
+          },
+          400: {
+            description: "Missing required fields"
+          },
+          500: {
+            description: "Server error"
+          }
+        }
+      }
+    },
+
+    "/orders/payment-confirmed": {
+      post: {
+        summary: "Confirm payment and trigger inventory check",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              example: {
+                orderId: "ORD_123",
+                paymentId: "PAY_123",
+                userId: "cust_001",
+                items: []
+              }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: "Inventory check queued"
+          },
+          400: {
+            description: "Missing required fields"
+          },
+          500: {
+            description: "Server error"
+          }
+        }
+      }
+    }
+  },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`
+      }
+    ]
+  },
+  apis: ["./index.js"],
+};
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
 

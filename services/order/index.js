@@ -5,6 +5,7 @@ import { db } from './firebaseAdmin.js'
 import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
 
+
 const app = express()
 const ACCOUNT_SERVICE_URL =
   process.env.ACCOUNT_SERVICE_URL ||
@@ -309,7 +310,6 @@ app.use(cors(corsOptions))
 app.use(express.json())
 
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-app.get("/hello", (req, res) => res.send("hello"));
 
 
 function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
