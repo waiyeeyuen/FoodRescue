@@ -88,6 +88,12 @@ services:
         paths:
           - /recommendations
         strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: ip
 
   - name: composite-place-order
     url: http://place-order:4001

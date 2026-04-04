@@ -36,6 +36,42 @@ function getImpactCacheKey(userId) {
   return `impact_profile_${String(userId || '')}`;
 }
 
+function getRecommendationCacheKey(userId) {
+  return `recommendation_snapshot_${String(userId || '')}`;
+}
+
+function readRecommendationSnapshot(userId) {
+  if (!userId) return null;
+
+  try {
+    const raw = localStorage.getItem(getRecommendationCacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      listings: Array.isArray(parsed?.listings) ? parsed.listings : [],
+      geminiUsed: Boolean(parsed?.geminiUsed),
+      geminiReasoning: String(parsed?.geminiReasoning || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeRecommendationSnapshot(userId, snapshot) {
+  if (!userId) return;
+
+  try {
+    localStorage.setItem(
+      getRecommendationCacheKey(userId),
+      JSON.stringify({
+        listings: Array.isArray(snapshot?.listings) ? snapshot.listings : [],
+        geminiUsed: Boolean(snapshot?.geminiUsed),
+        geminiReasoning: String(snapshot?.geminiReasoning || ''),
+      })
+    );
+  } catch {}
+}
+
 function normalizeImpactSnapshot(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
   return {
@@ -373,7 +409,14 @@ export default function UserHome() {
           )
             .then(async (recRes) => {
               if (!recRes.ok) {
-                throw new Error('Failed to load recommendations');
+                let message = 'Failed to load recommendations';
+                try {
+                  const body = await recRes.json();
+                  message = body?.error || message;
+                } catch {}
+                const error = new Error(message);
+                error.status = recRes.status;
+                throw error;
               }
 
               const recData = await recRes.json();
@@ -405,9 +448,22 @@ export default function UserHome() {
               setRecommendedListings(recommendationResult.listings);
               setGeminiUsed(recommendationResult.geminiUsed);
               setGeminiReasoning(recommendationResult.geminiReasoning);
+              writeRecommendationSnapshot(user.id, recommendationResult);
             })
             .catch((e) => {
               if (e?.name === 'AbortError' || controller.signal.aborted) return;
+
+              if (e?.status === 429) {
+                const cachedRecommendations = readRecommendationSnapshot(user.id);
+                if (cachedRecommendations) {
+                  setRecommendedListings(cachedRecommendations.listings);
+                  setGeminiUsed(cachedRecommendations.geminiUsed);
+                  setGeminiReasoning(cachedRecommendations.geminiReasoning);
+                }
+                setRecommendationsError(null);
+                return;
+              }
+
               setRecommendationsError(e?.message || 'Failed to load recommendations');
               setRecommendedListings([]);
               setGeminiUsed(false);

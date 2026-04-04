@@ -88,6 +88,12 @@ services:
         paths:
           - /recommendations
         strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: ip
       - name: composite-get-food-recommendation-prefixed-route
         paths:
           - /composite/get-food-recommendation
