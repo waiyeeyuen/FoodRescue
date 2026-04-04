@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
+import { randomUUID } from 'crypto'
 import {db} from '../firebase/firebaseAdmin.js'
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
@@ -12,10 +13,36 @@ const DELETED_LISTINGS = db.collection('deleted_listings')
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
 };
 app.use(cors(corsOptions))
 app.use(express.json())
+const CORRELATION_HEADER = 'x-correlation-id'
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
+  return String(Array.isArray(value) ? value[0] : value || '').trim()
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = '') {
+  if (!correlationId) return { ...headers }
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  }
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`
+    req.correlationId = correlationId
+    res.setHeader(CORRELATION_HEADER, correlationId)
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`)
+    next()
+  }
+}
+
+app.use(correlationMiddleware('inventory'))
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -127,12 +154,12 @@ function buildDeletedListingRecord({
   }
 }
 
-async function deleteListingInOutSystems(listingId) {
+async function deleteListingInOutSystems(listingId, correlationId = '') {
   const url = `${getOutSystemsBaseUrl()}/DeleteFoodListing?listingId=${encodeURIComponent(listingId)}`
 
   const response = await fetch(url, {
     method: 'DELETE',
-    headers: { Accept: 'application/json' },
+    headers: withCorrelationHeaders({ Accept: 'application/json' }, correlationId),
   })
 
   const data = await readOutsystemsBody(response)
@@ -257,7 +284,7 @@ async function createListing(req, res) {
 
       const response = await fetch(url, {
         method,
-        headers: { Accept: 'application/json' },
+        headers: withCorrelationHeaders({ Accept: 'application/json' }, req.correlationId),
       });
 
       const data = await readOutsystemsBody(response);
@@ -341,7 +368,9 @@ app.post('/inventory/upload-image', upload.single('image'), async (req, res) => 
 // Get all active listings
 app.get('/inventory/active', async (req, res) => {
   try {
-    const response = await fetch(`${getOutSystemsBaseUrl()}/GetActiveListing`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetActiveListing`, {
+      headers: withCorrelationHeaders({}, req.correlationId),
+    });
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch active listings' });
     }
@@ -385,7 +414,9 @@ app.get('/inventory/restaurant/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
     console.log('restaurantid', restaurantId)
-    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantId?restaurantId=${encodeURIComponent(restaurantId)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantId?restaurantId=${encodeURIComponent(restaurantId)}`, {
+      headers: withCorrelationHeaders({}, req.correlationId),
+    });
     const data = await readOutsystemsBody(response);
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch restaurant listings' });
@@ -418,7 +449,7 @@ app.delete('/inventory/listings/:id', async (req, res) => {
       reason = 'restaurant_removed_listing',
     } = req.body || {}
 
-    const outsystemsResponse = await deleteListingInOutSystems(listingId)
+    const outsystemsResponse = await deleteListingInOutSystems(listingId, req.correlationId)
 
     let deletedListing = null
     let archiveWarning = null
@@ -459,7 +490,9 @@ app.get('/inventory/search/item', async (req, res) => {
   try {
     const { itemName } = req.query;
     if (!itemName) return res.status(400).json({ error: 'itemName is required' });
-    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByItemName?itemName=${encodeURIComponent(itemName)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByItemName?itemName=${encodeURIComponent(itemName)}`, {
+      headers: withCorrelationHeaders({}, req.correlationId),
+    });
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch listings by item name' });
     }
@@ -475,7 +508,9 @@ app.get('/inventory/search/restaurant-name', async (req, res) => {
   try {
     const { restaurantName } = req.query;
     if (!restaurantName) return res.status(400).json({ error: 'restaurantName is required' });
-    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantName?restaurantName=${encodeURIComponent(restaurantName)}`);
+    const response = await fetch(`${getOutSystemsBaseUrl()}/GetListingByRestaurantName?restaurantName=${encodeURIComponent(restaurantName)}`, {
+      headers: withCorrelationHeaders({}, req.correlationId),
+    });
     if (!response.ok) {
       return res.status(response.status).json({ error: 'Failed to fetch listings by restaurant name' });
     }

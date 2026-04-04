@@ -81,13 +81,19 @@ services:
           - /notifications
         strip_path: false
 
-  - name: composite-recommendation
-    url: http://recommendation:4000
+  - name: composite-get-food-recommendation
+    url: http://get-food-recommendation:4000
     routes:
       - name: composite-recommendation-route
         paths:
           - /recommendations
         strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: ip
 
   - name: composite-place-order
     url: http://place-order:4001
@@ -98,34 +104,10 @@ services:
           - /orders/reward-status
         strip_path: false
 
-  - name: composite-upload-listing
-    url: http://upload-listing:4002
-    routes:
-      - name: composite-upload-listing-route
-        paths:
-          - /listings
-        strip_path: false
-
   - name: composite-delete-listing
     url: http://delete-listing:4005
     routes:
       - name: composite-delete-listing-route
         paths:
           - /delete-listing
-        strip_path: false
-
-  - name: composite-remove-expired
-    url: http://remove-expired:4003
-    routes:
-      - name: composite-remove-expired-route
-        paths:
-          - /cleanup
-        strip_path: false
-
-  - name: composite-checkout
-    url: http://checkout:4004
-    routes:
-      - name: composite-checkout-route
-        paths:
-          - /checkout
         strip_path: false

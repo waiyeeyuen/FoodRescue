@@ -81,16 +81,22 @@ services:
           - /notifications
         strip_path: false
 
-  - name: composite-recommendation
+  - name: composite-get-food-recommendation
     url: http://host.docker.internal:4000
     routes:
-      - name: composite-recommendation-route
+      - name: composite-get-food-recommendation-route
         paths:
           - /recommendations
         strip_path: false
-      - name: composite-recommendation-prefixed-route
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              policy: local
+              limit_by: ip
+      - name: composite-get-food-recommendation-prefixed-route
         paths:
-          - /composite/recommendation
+          - /composite/get-food-recommendation
         strip_path: true
 
   - name: composite-place-order
@@ -105,18 +111,6 @@ services:
           - /composite/place-order
         strip_path: true
 
-  - name: composite-upload-listing
-    url: http://host.docker.internal:4002
-    routes:
-      - name: composite-upload-listing-route
-        paths:
-          - /listings
-        strip_path: false
-      - name: composite-upload-listing-prefixed-route
-        paths:
-          - /composite/upload-listing
-        strip_path: true
-
   - name: composite-delete-listing
     url: http://host.docker.internal:4005
     routes:
@@ -127,28 +121,4 @@ services:
       - name: composite-delete-listing-prefixed-route
         paths:
           - /composite/delete-listing
-        strip_path: true
-
-  - name: composite-remove-expired
-    url: http://host.docker.internal:4003
-    routes:
-      - name: composite-remove-expired-route
-        paths:
-          - /cleanup
-        strip_path: false
-      - name: composite-remove-expired-prefixed-route
-        paths:
-          - /composite/remove-expired
-        strip_path: true
-
-  - name: composite-checkout
-    url: http://host.docker.internal:4004
-    routes:
-      - name: composite-checkout-route
-        paths:
-          - /checkout
-        strip_path: false
-      - name: composite-checkout-prefixed-route
-        paths:
-          - /composite/checkout
         strip_path: true

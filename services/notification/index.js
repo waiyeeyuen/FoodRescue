@@ -1,5 +1,6 @@
 // index.js
 import express from 'express';
+import { randomUUID } from 'crypto';
 import { connectRabbitMQ } from './rabbitmq.js';
 import { handleEvent, getTitle, getMessage, getChannel } from './handler.js';
 import { resolveNotificationDelivery } from './accountClient.js';
@@ -17,6 +18,32 @@ const app = express();
 app.use(express.json());
 const NOTIFICATION_CACHE_TTL_MS = 30 * 1000;
 const notificationCache = new Map();
+const CORRELATION_HEADER = 'x-correlation-id';
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || '').trim();
+}
+
+function getCorrelationIdFromMessage(msg, payload = {}) {
+  return (
+    getHeaderValue(msg?.properties?.headers, CORRELATION_HEADER) ||
+    String(payload?.correlationId || '').trim() ||
+    `notification:${randomUUID()}`
+  );
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`;
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware('notification'));
 
 function toDateValue(value) {
   if (!value) return null;
@@ -124,22 +151,33 @@ async function startConsumer() {
   
   ['order.expired', 'listing.expired', 'reward.triggered'].forEach(queue => {
     channel.consume(queue, async (msg) => {
-      const data = await handleEvent(msg);
-      
-      const status = await sendNotification(data);
-       
-      await db.collection('notifications')
-        .doc(data.docId)
-        .update({ status });
+      if (!msg) return;
 
-      upsertCachedNotification(data.userId, {
-        id: data.docId,
-        ...data,
-        status,
-        createdAt: new Date().toISOString(),
-      });
-        
-      channel.ack(msg);
+      let data;
+
+      try {
+        data = await handleEvent(msg);
+        const correlationId = getCorrelationIdFromMessage(msg, data);
+        data = { ...data, correlationId };
+        const status = await sendNotification(data);
+
+        await db.collection('notifications')
+          .doc(data.docId)
+          .update({ status });
+
+        upsertCachedNotification(data.userId, {
+          id: data.docId,
+          ...data,
+          status,
+          createdAt: new Date().toISOString(),
+        });
+
+        channel.ack(msg);
+      } catch (error) {
+        const correlationId = getCorrelationIdFromMessage(msg, data);
+        console.error(`[notifications/consumer] Failed to process ${queue} cid=${correlationId}:`, error?.message || error);
+        channel.nack(msg, false, false);
+      }
     });
   });
 }
@@ -220,6 +258,7 @@ app.post('/notifications/send', async (req, res) => {
       userPhone,
       phone,
       explicitChannel: Boolean(channel),
+      correlationId: req.correlationId,
     });
     const resolvedChannel = resolvedDelivery.channel;
     const resolvedPhone = resolvedDelivery.userPhone;
@@ -230,6 +269,7 @@ app.post('/notifications/send', async (req, res) => {
       orderId,
       requestedChannel,
       resolvedChannel,
+      correlationId: req.correlationId,
       hasPhone: Boolean(resolvedPhone),
       hasInsufficientItems: Array.isArray(insufficientItems) && insufficientItems.length > 0
     }));

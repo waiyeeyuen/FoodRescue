@@ -67,11 +67,8 @@ services:
       dockerfile: services/payment/Dockerfile
     ports:
       - "3003:3003"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PLACE_ORDER_SERVICE_URL: http://place-order:4001
       PORT: 3003
     env_file:
       - ./services/payment/.env
@@ -88,7 +85,6 @@ services:
     environment:
       OUTSYSTEMS_INVENTORY_BASE_URL: ${OUTSYSTEMS_INVENTORY_BASE_URL:-https://personal-s6eufuop.outsystemscloud.com/FoodRescue_Inventory/rest/InventoryAPI}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      PLACE_ORDER_SERVICE_URL: http://place-order:4001
     env_file:
       - ./services/inventory/.env
     command: ["npm", "run", "consumer"]
@@ -163,16 +159,17 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      payment:
-        condition: service_started
     environment:
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PORT: 3007
       PAYMENT_SERVICE_URL: http://payment:3003
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    env_file:
+      - ./services/payment/.env
 
-  recommendation:
+  get-food-recommendation:
     build:
       context: .
-      dockerfile: composite/recommendation/Dockerfile
+      dockerfile: composite/get-food-recommendation/Dockerfile
     ports:
       - "4000:4000"
     environment:
@@ -182,18 +179,7 @@ services:
       REWARD_SERVICE_URL: http://reward:3005
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
     env_file:
-      - ./composite/recommendation/.env
-
-  upload-listing:
-    build:
-      context: .
-      dockerfile: composite/upload-listing/Dockerfile
-    ports:
-      - "4002:4002"
-    environment:
-      PORT: 4002
-      INVENTORY_SERVICE_URL: http://inventory:3000
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      - ./composite/get-food-recommendation/.env
 
   delete-listing:
     build:
@@ -205,39 +191,8 @@ services:
       PORT: 4005
       INVENTORY_SERVICE_URL: http://inventory:3000
       ORDER_SERVICE_URL: http://order:3004
-      PAYMENT_SERVICE_URL: http://payment:3003
+      REFUND_MANAGEMENT_SERVICE_URL: http://refund-management:3007
       NOTIFICATION_SERVICE_URL: http://notification:3006
-      REWARD_SERVICE_URL: http://reward:3005
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
-
-  remove-expired:
-    build:
-      context: .
-      dockerfile: composite/remove-expired/Dockerfile
-    ports:
-      - "4003:4003"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      PORT: 4003
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      INVENTORY_SERVICE_URL: http://inventory:3000
-      PAYMENT_SERVICE_URL: http://payment:3003
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
-    volumes:
-      - ./services/firebase/serviceAccountKey.json:/app/services/firebase/serviceAccountKey.json:ro
-
-  checkout:
-    build:
-      context: .
-      dockerfile: composite/checkout/Dockerfile
-    ports:
-      - "4004:4004"
-    environment:
-      PORT: 4004
-      ORDER_SERVICE_URL: http://order:3004
-      PAYMENT_SERVICE_URL: http://payment:3003
       REWARD_SERVICE_URL: http://reward:3005
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
 

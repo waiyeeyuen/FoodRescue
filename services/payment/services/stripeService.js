@@ -7,6 +7,7 @@ export async function createStripeCheckoutSession({
   paymentId,
   orderId,
   userId,
+  correlationId,
   currency,
   items,
   successUrl,
@@ -18,7 +19,8 @@ export async function createStripeCheckoutSession({
     metadata: {
       paymentId,
       orderId,
-      userId
+      userId,
+      correlationId: String(correlationId || "")
     },
     line_items: items.map((item) => ({
       price_data: {

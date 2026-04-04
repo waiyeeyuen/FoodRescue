@@ -1,5 +1,8 @@
 import express from "express";
 import cors from "cors";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
+import { randomUUID } from "crypto";
 import { db } from "../firebase/firebaseAdmin.js";
 
 const app = express();
@@ -10,13 +13,246 @@ const BASE_URL = String(process.env.OUTSYSTEMS_REWARD_BASE_URL || "")
 const STAMP_TARGET = 5;
 const DISCOUNT_PERCENT = 20;
 const RESTORED_REWARDS = db.collection("reward_restorations");
+const CORRELATION_HEADER = "x-correlation-id";
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Reward Service API",
+      version: "1.0.0",
+      description: "Manages reward eligibility checks, reward updates, and reward voucher restoration.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct reward service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [{ name: "Reward", description: "Reward service endpoints" }],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string" },
+          },
+        },
+        RewardEligibilityResponse: {
+          type: "object",
+          properties: {
+            userId: { type: "string" },
+            eligible: { type: "boolean" },
+            active: { type: "boolean" },
+            stampsCount: { type: "number" },
+            stampTarget: { type: "number" },
+            ordersLeft: { type: "number" },
+            discountPercent: { type: "number" },
+            voucherId: { type: "string" },
+            source: { type: "string" },
+          },
+        },
+      },
+    },
+    paths: {
+      "/reward/eligibility/{userId}": {
+        get: {
+          tags: ["Reward"],
+          summary: "Get reward eligibility for a user",
+          description:
+            "Gateway copy-paste URL: http://localhost:8000/reward/eligibility/{userId}",
+          parameters: [
+            {
+              in: "path",
+              name: "userId",
+              required: true,
+              schema: { type: "string", example: "user_123" },
+            },
+            {
+              in: "query",
+              name: "stampsCount",
+              required: false,
+              schema: { type: "integer", default: 0, minimum: 0 },
+            },
+          ],
+          responses: {
+            200: {
+              description: "Eligibility evaluated",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/RewardEligibilityResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/reward/update": {
+        post: {
+          tags: ["Reward"],
+          summary: "Update reward voucher status",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["userId"],
+                  properties: {
+                    userId: { type: "string", example: "user_123" },
+                    voucherId: { type: "string", example: "voucher_abc" },
+                    source: { type: "string", example: "restored-voucher" },
+                    restoreKey: { type: "string", example: "restored_user_123_1710000000000" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Reward update completed",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean" },
+                      source: { type: "string" },
+                      voucherId: { type: "string" },
+                      restoreKey: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            404: {
+              description: "Restored voucher not found",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/reward/restore": {
+        post: {
+          tags: ["Reward"],
+          summary: "Restore a reward voucher",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["userId"],
+                  properties: {
+                    userId: { type: "string", example: "user_123" },
+                    voucherId: { type: "string", example: "restored_user_123" },
+                    restoreKey: { type: "string", example: "restored_user_123_1710000000000" },
+                    sourceOrderIds: { type: "array", items: { type: "string" } },
+                    sourcePaymentIds: { type: "array", items: { type: "string" } },
+                    reason: { type: "string", example: "refund_restored_voucher" },
+                    listingId: { type: "string", example: "listing_456" },
+                    discountPercent: { type: "number", example: 20 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            201: {
+              description: "Reward voucher restored",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean" },
+                      restoreKey: { type: "string" },
+                      voucherId: { type: "string" },
+                      source: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description: "Invalid request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 app.use(
   cors({
     origin: ["http://localhost:3000", "http://localhost:5173"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"],
   })
 );
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`;
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("reward"));
+
+app.get("/reward-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use("/reward-api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 function getField(obj, ...keys) {
   for (const key of keys) {
@@ -141,8 +377,10 @@ async function getActiveRestoredReward(userId) {
   return matches[0] || null;
 }
 
-async function fetchRewardEligibility(userId) {
-  const response = await fetch(`${getRewardBaseUrl()}/eligibility?UserId=${encodeURIComponent(userId)}`);
+async function fetchRewardEligibility(userId, correlationId = "") {
+  const response = await fetch(`${getRewardBaseUrl()}/eligibility?UserId=${encodeURIComponent(userId)}`, {
+    headers: withCorrelationHeaders({}, correlationId),
+  });
   const rawText = await response.text();
 
   let data = null;
@@ -180,7 +418,7 @@ app.get("/reward/eligibility/:userId", async (req, res) => {
       });
     }
 
-    const { response, data } = await fetchRewardEligibility(userId);
+    const { response, data } = await fetchRewardEligibility(userId, req.correlationId);
     const parsed = parseEligibilityPayload(data);
 
     if (response.ok && parsed.eligible !== null) {
@@ -258,7 +496,7 @@ app.post("/reward/update", async (req, res) => {
 
     const response = await fetch(`${getRewardBaseUrl()}/UpdateStatus`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withCorrelationHeaders({ "Content-Type": "application/json" }, req.correlationId),
       body: JSON.stringify({ UserId: userId, VoucherId: voucherId || "" }),
     });
     const rawText = await response.text();

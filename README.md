@@ -2,217 +2,234 @@
 
 FoodRescue is a microservices-based web platform that helps reduce food waste by connecting customers with time-sensitive surplus meals from restaurants at discounted prices.
 
-The system supports both customer and restaurant workflows:
+The current repository is organized around:
 
-- Customers can register, browse rescue listings, receive personalized recommendations, place orders, make payments, earn discount rewards, and receive notifications.
-- Restaurants can register, create listings, manage live/expired/deleted listings, view affected orders, and trigger refunds when a listing is deleted.
+- a React frontend
+- Kong as the API gateway
+- 3 composite / orchestrator microservices only
+- atomic microservices for domain responsibilities
+- RabbitMQ for asynchronous order-processing flows
+- external integrations such as Firebase, Stripe, Twilio, Amazon S3, Gemini, and OutSystems
 
-This project is built around atomic microservices, composite orchestration services, an API gateway, asynchronous messaging, and external integrations such as Firebase, Stripe, Twilio, AWS S3, Gemini, and OutSystems.
+## Current Architecture
+
+The current repo uses these composite microservices only:
+
+- `get-food-recommendation`
+- `place-order`
+- `delete-listing`
+
+Important note:
+
+- restaurant listing creation is **not** a composite flow in the current implementation
+- the restaurant UI creates listings directly through the atomic `inventory` service
+
+### SOA Layers Diagram
+
+![SOA Layers Diagram](docs/diagrams/soa-layers-diagram.png)
 
 ## Problem Statement
 
 Restaurants frequently have unsold food near the end of the day, while customers are often looking for affordable meals nearby. Without a coordinated system, this food is wasted and restaurants lose potential revenue.
 
-FoodRescue solves this by:
+FoodRescue addresses this by:
 
-- letting restaurants publish discounted rescue meals before they expire
+- allowing restaurants to publish discounted rescue meals before they expire
 - surfacing relevant listings to customers
 - supporting secure checkout and payment
 - notifying users about order outcomes and refunds
 - rewarding repeat rescue behavior with discount eligibility
 - allowing restaurants to remove listings safely while automatically refunding affected customers
 
-## What The Project Does
+## User Scenarios
 
-At a high level, FoodRescue combines:
+### User Scenario Videos
 
-- a React frontend for customers and restaurants
-- atomic microservices for account, inventory, order, payment, reward, and notification responsibilities
-- composite microservices that orchestrate end-to-end business scenarios
-- Kong as the API gateway
-- RabbitMQ for asynchronous event/queue-based workflows
-
-Key user-facing capabilities:
-
-- user and restaurant registration/login
-- personalized food recommendations using order history, current availability, reward status, and Gemini reranking
-- cart and order placement flow with Stripe checkout
-- reward eligibility and discount tracking
-- in-app and SMS notifications through Twilio
-- restaurant listing creation and listing deletion with composite-managed refunds
-- deleted listing archive for restaurant-side tracking
-
-## Scenario Overview
+https://youtu.be/MrNy8Xkz2WM
 
 ### Scenario 1: Get Food Recommendation
 
-The recommendation composite service:
+The `get-food-recommendation` composite orchestrates:
 
-- reads a customer's order history from `order`
-- reads currently available listings from `inventory`
-- checks discount eligibility from `reward`
-- optionally reranks recommendations using Gemini
-- returns personalized recommendations to the frontend
+- `order` for customer order history
+- `inventory` for currently active listings
+- `reward` for reward eligibility
+- Gemini for reranking recommended listings
 
-Main route:
+Main external route:
 
 - `GET /recommendations/:userId`
 
-### Scenario 2: Order Placement And Payment Processing
+![Scenario 1](docs/diagrams/scenario-1.png)
 
-The place-order composite service:
+### Scenario 2A: Place Order, Payment, and Inventory Check
 
-- checks reward status
-- creates a Stripe checkout/payment flow
-- coordinates with inventory and order services
-- updates reward usage after a successful discounted order
-- triggers user notifications
+The first half of the order flow is handled by `place-order` and `payment`:
 
-Supporting services include RabbitMQ, the inventory consumer, payment webhook handling, and the notification service.
+- the user places an order through `place-order`
+- `place-order` creates a checkout session through `payment`
+- `payment` creates the Stripe checkout session
+- after payment is confirmed, `place-order` publishes an inventory check request to RabbitMQ
+- the inventory worker consumes `inventory.check` and publishes the result to `inventory.result`
 
-Main routes:
+Main external route:
 
-- `GET /orders/reward-status/:userId`
 - `POST /orders/place`
-- `POST /payments/webhook`
 
-### Scenario 3: Restaurant Listing Creation, Deletion, And Refund
+Internal follow-up:
 
-The upload-listing and delete-listing composites support restaurant operations.
+- `POST /orders/payment-confirmed`
 
-Current delete-listing behavior:
+![Scenario 2A](docs/diagrams/scenario-2a.png)
 
-- restaurant creates a listing through the listing flow
-- restaurant previews listing deletion
-- the delete-listing composite checks affected orders from `order`
-- all affected orders are refunded through `payment`
-- each affected customer receives one website notification and one Twilio SMS with combined refund totals
-- if a refunded order had used a discount voucher, the customer regains one voucher
-- the listing is deleted from `inventory` and archived for the restaurant's `Deleted` tab
+### Scenario 2B: Order Outcome or Refund Outcome
 
-Main routes:
+The second half of the order flow handles the final business outcome:
 
-- `POST /listings`
+- if stock is available, `place-order` creates the confirmed order, logs the payment, updates reward usage if needed, and triggers notifications
+- if stock is insufficient, `place-order` publishes a refund request to RabbitMQ
+- `refund-management` consumes `refund.request`, creates the Stripe refund, and publishes `refund.result`
+- `place-order` consumes the refund result and triggers the final refund notification
+
+Queues used in the current implementation:
+
+- `inventory.check`
+- `inventory.result`
+- `refund.request`
+- `refund.result`
+
+![Scenario 2B](docs/diagrams/scenario-2b.png)
+
+### Scenario 3: Create Listing and Delete Listing with Refunds
+
+Scenario 3 has two parts in the current codebase:
+
+- **Create listing** is a direct `FoodRescue UI -> Inventory` interaction
+- **Delete listing** is orchestrated by the `delete-listing` composite
+
+The delete flow:
+
+- builds a delete preview using `inventory` and `order`
+- calls `refund-management` to process refunds
+- marks affected order items as refunded in `order`
+- restores vouchers in `reward` if needed
+- sends notifications through `notification`
+- deletes and archives the listing in `inventory`
+
+Main external routes:
+
+- `POST /inventory/upload-image`
+- `POST /inventory/listings`
 - `GET /delete-listing/:listingId/preview`
 - `DELETE /delete-listing/:listingId`
 
-## Architecture
+![Scenario 3](docs/diagrams/scenario-3.png)
 
-### Frontend
+## Services
 
-- `frontend/`
-- React 19 + Vite
-- customer UI and restaurant UI
+### Composite / Orchestrator Microservices
+
+| Service | Responsibility |
+| --- | --- |
+| `composite/get-food-recommendation` | Scenario 1 orchestration across order, inventory, reward, and Gemini |
+| `composite/place-order` | Scenario 2 orchestration across payment, inventory result handling, order creation, reward update, refund queueing, and notification |
+| `composite/delete-listing` | Scenario 3 delete preview, refund orchestration, order updates, reward restoration, notification, and final listing deletion |
 
 ### Atomic Microservices
 
-- `services/account` - authentication, profiles, cart, impact, leaderboard
-- `services/inventory` - listing CRUD, active/deleted listing retrieval, image upload, OutSystems inventory integration
-- `services/order` - order persistence and history queries
-- `services/payment` - Stripe checkout, payment records, refunds, webhook handling
-- `services/reward` - reward eligibility, voucher usage, voucher restoration after refunds
-- `services/notification` - in-app notification records and Twilio SMS delivery
-- `services/refund-management` - background refund retry consumer for queue-driven failures
+| Service | Responsibility |
+| --- | --- |
+| `services/account` | authentication, user and restaurant profiles, cart, impact metrics, leaderboard |
+| `services/order` | order persistence, order history, affected-order lookups, item refund status updates |
+| `services/reward` | reward eligibility, voucher usage, voucher restoration |
+| `services/inventory` | listing CRUD, active/deleted listings, image upload, OutSystems inventory integration |
+| `services/payment` | payment records, Stripe checkout session creation, Stripe webhook handling |
+| `services/notification` | in-app notifications, Twilio SMS delivery, notification storage |
+| `services/refund-management` | refund worker and HTTP refund endpoint, Stripe refund execution, refund queue result publishing |
 
-### Composite Microservices
+### Background Workers
 
-- `composite/recommendation` - Scenario 1 orchestration
-- `composite/place-order` - Scenario 2 orchestration
-- `composite/upload-listing` - restaurant listing creation flow
-- `composite/delete-listing` - restaurant delete-listing, refund, notification, and voucher-restore flow
-- `composite/checkout` - checkout helper/orchestration
-- `composite/remove-expired` - expired listing cleanup flow
+| Worker | Responsibility |
+| --- | --- |
+| `services/inventory/consumer.js` | consumes `inventory.check`, validates stock sequentially, and publishes `inventory.result` |
 
-### Platform Components
+## Platform Components and Integrations
 
-- `api/kong.docker.yml` - declarative Kong gateway config used in Docker
-- `rabbitmq` - queue broker and management UI
-- Firebase - account, notification, deleted listing archive, reward restoration, and other persisted app data
-- AWS S3 - listing image storage
-- Stripe - payment and refund processing
-- Twilio - SMS notifications
-- Gemini - recommendation reranking
-- OutSystems endpoints - inventory and reward system integration
+- `Kong Gateway` for public routing, CORS, Stripe webhook route restriction, and recommendation route rate limiting
+- `RabbitMQ` for Scenario 2 queue-based processing
+- `Firebase / Firestore` for persisted service-owned collections
+- `Stripe` for checkout and refunds
+- `Twilio` for SMS notifications
+- `Amazon S3` for food listing images
+- `Gemini` for recommendation reranking
+- `OutSystems Inventory API` for inventory data and decrements
+- `OutSystems Reward API` for reward eligibility logic
 
 ## Repository Structure
 
 ```text
-api/                    Kong gateway configuration
-composite/              Composite orchestration services
+api/                    Kong configuration
+composite/              Current composite microservices
+docs/diagrams/          Scenario and architecture diagrams used in this README
 frontend/               React frontend
-services/               Atomic microservices
+services/               Atomic services and workers
 docker-compose.yml      Main local runtime
 DOCKER.md               Short Docker notes
 README.md               This file
 ```
 
-## Prerequisites
+## Local Configuration
 
-Before running the project, install or prepare:
+### Required Local File
 
-- Docker Desktop or Docker Engine with Docker Compose v2
-- Stripe CLI for local webhook forwarding
-- valid Firebase service account JSON
-- valid provider credentials for the services you plan to demo:
-  - Stripe
-  - Twilio
-  - AWS S3
-  - Gemini
-  - OutSystems-backed APIs used by inventory and reward flows
-
-## Required Local Files
-
-Do not place actual secret values in this README. Submit the configuration files separately together with the project.
-
-### Firebase Service Account
-
-Place the Firebase Admin JSON file here:
+Place the Firebase Admin service account file here:
 
 - `services/firebase/serviceAccountKey.json`
 
+This file is mounted into the Firebase-backed containers by `docker-compose.yml`.
+
+### `.env` Files Used By The Current Repo
+
+The current local setup uses these `.env` files:
+
+- `services/inventory/.env`
+- `services/payment/.env`
+- `services/notification/.env`
+- `composite/place-order/.env`
+- `composite/get-food-recommendation/.env`
+- `frontend/.env`
+
+What they are used for:
+
+- `services/inventory/.env`
+  - S3 credentials and inventory-side runtime settings
+- `services/payment/.env`
+  - Stripe keys, Stripe webhook secret, and payment runtime settings
+- `services/notification/.env`
+  - Twilio credentials and notification runtime settings
+- `composite/place-order/.env`
+  - place-order runtime overrides such as local port and endpoint configuration
+- `composite/get-food-recommendation/.env`
+  - Gemini API key
+- `frontend/.env`
+  - local Vite endpoint overrides and S3 display configuration when running the frontend outside Docker
+
+Notes:
+
+- for the default Docker setup, the frontend also receives `VITE_*` values directly from `docker-compose.yml`
+- `delete-listing` does not currently use its own `.env` file; its runtime wiring is defined in `docker-compose.yml`
+- OutSystems base URLs are injected through `docker-compose.yml` and may be overridden with shell environment variables before startup:
+  - `OUTSYSTEMS_INVENTORY_BASE_URL`
+  - `OUTSYSTEMS_REWARD_BASE_URL`
+
 Important:
 
-- this file is mounted into multiple containers by `docker-compose.yml`
-- if you are on macOS with iCloud Drive enabled, make sure the file is fully downloaded locally and not an offloaded placeholder
+- do not commit real secrets to public repositories
+- rotate any provider credentials before external sharing or submission if needed
 
-### `.env` File Locations
-
-Create or populate the following files:
-
-- `services/inventory/.env`
-- `services/payment/.env`
-- `services/notification/.env`
-- `composite/place-order/.env`
-- `composite/recommendation/.env`
-
-For the default Docker setup, no additional frontend `.env` file is required because the frontend service receives its `VITE_*` values from `docker-compose.yml`.
-
-### What These Config Files Are Used For
-
-- `services/inventory/.env`
-  - AWS S3 credentials and inventory-related runtime settings
-- `services/payment/.env`
-  - Stripe keys, webhook secret, frontend success/cancel URLs, payment service configuration
-- `services/notification/.env`
-  - Twilio credentials and optional default SMS fallback number
-- `composite/place-order/.env`
-  - composite service runtime settings for order placement
-- `composite/recommendation/.env`
-  - Gemini API key, cache options, and recommendation runtime settings
-
-## Docker Configuration
+## Docker Runtime
 
 The project is designed to run from the root `docker-compose.yml`.
-
-Important runtime details:
-
-- Kong uses `./api/kong.docker.yml` as a declarative config volume
-- RabbitMQ is health-checked before dependent services start
-- the Firebase key is mounted read-only into Firebase-dependent containers
-- service-specific `.env` files are injected using Compose `env_file`
-- the frontend is configured to call Kong on `http://localhost:8000`
-
-## How To Run
 
 From the project root:
 
@@ -220,7 +237,7 @@ From the project root:
 docker compose up --build
 ```
 
-To stop the project:
+To stop the stack:
 
 ```sh
 docker compose down
@@ -229,10 +246,10 @@ docker compose down
 Recommended startup flow:
 
 1. Place the Firebase key in `services/firebase/serviceAccountKey.json`.
-2. Populate all required `.env` files at the paths listed above.
+2. Populate the required `.env` files listed above.
 3. Start the full stack with `docker compose up --build`.
 4. Open the frontend at `http://localhost:5173`.
-5. Use Kong at `http://localhost:8000` for API access.
+5. Access the API through Kong at `http://localhost:8000`.
 
 ## Stripe Webhook Setup
 
@@ -242,7 +259,7 @@ For local Stripe webhook testing, run this on the host machine:
 stripe listen --forward-to http://localhost:3003/payments/webhook
 ```
 
-Then ensure the webhook secret generated by Stripe CLI is placed inside:
+Then place the generated webhook secret in:
 
 - `services/payment/.env`
 
@@ -258,142 +275,58 @@ RabbitMQ default credentials:
 - username: `guest`
 - password: `guest`
 
-## Exposed Ports
+## Exposed Host Ports
 
 | Component | Host Port | Purpose |
 | --- | ---: | --- |
 | frontend | 5173 | React UI |
 | kong | 8000 | public API gateway |
-| kong admin | 8001 | Kong admin interface |
+| kong admin | 8001 | Kong admin API |
 | rabbitmq | 5672 | AMQP broker |
 | rabbitmq ui | 15672 | RabbitMQ management UI |
-| account | 3001 | account/auth/profile/cart service |
-| inventory | 3000 | inventory/listing service |
-| payment | 3003 | payment/refund service |
-| order | 3004 | order service |
-| reward | 3005 | reward service |
-| notification | 3006 | notification service |
-| recommendation | 4000 | recommendation composite |
+| inventory | 3000 | inventory HTTP API |
+| account | 3001 | account/auth/profile/cart API |
+| payment | 3003 | payment HTTP API |
+| order | 3004 | order HTTP API |
+| reward | 3005 | reward HTTP API |
+| notification | 3006 | notification HTTP API |
+| get-food-recommendation | 4000 | recommendation composite |
 | place-order | 4001 | place-order composite |
-| upload-listing | 4002 | upload-listing composite |
-| remove-expired | 4003 | expired listing cleanup composite |
-| checkout | 4004 | checkout composite |
 | delete-listing | 4005 | delete-listing composite |
 
-Note:
+Notes:
 
-- the frontend should normally talk to Kong on port `8000`
-- direct service ports are mainly useful for debugging and development
+- the frontend should normally call Kong on port `8000`
+- `refund-management` and `inventory-consumer` run inside the Docker network and are not exposed as public host ports
 
 ## Kong Route Prefixes
 
-The following route prefixes are exposed through Kong:
+The current Kong config exposes these public route prefixes:
 
 | Route Prefix | Target |
 | --- | --- |
 | `/account` | account service |
 | `/inventory` | inventory service |
-| `/orders` | order service and place-order routes |
+| `/orders` | order service and place-order composite routes |
 | `/payments` | payment service |
 | `/reward` | reward service |
 | `/notifications` | notification service |
-| `/recommendations` | recommendation composite |
-| `/listings` | upload-listing composite |
+| `/recommendations` | get-food-recommendation composite |
 | `/delete-listing` | delete-listing composite |
-| `/cleanup` | remove-expired composite |
-| `/checkout` | checkout composite |
 
-## Test Accounts
+## Current Behavior Notes
 
-Fill in the credentials below before submission/demo.
-
-```text
-User accounts:
-
-Test Customer 1:
-Name:
-Email:
-Password:
-Phone:
-User ID:
-
-Test Customer 2:
-Name:
-Email:
-Password:
-Phone:
-User ID:
-
-Test Restaurant 1:
-Restaurant Name:
-Email:
-Password:
-Phone:
-Restaurant ID:
-
-Test Restaurant 2:
-Restaurant Name:
-Email:
-Password:
-Phone:
-Restaurant ID:
-```
-
-## Demo Notes
-
-Useful pages in the frontend:
-
-- `/login` - login/register page for users and restaurants
-- `/` - customer home page with recommendations
-- `/cart` - customer cart
-- `/orders` - customer order history
-- `/leaderboard` - customer impact leaderboard
-- `/profile` - customer profile
-- `/restaurant/listings` - restaurant listing management
-- `/restaurant/orders` - restaurant order view
-- `/restaurant/profile` - restaurant profile
-- `/restaurant/settings` - restaurant settings
-
-Restaurant listing management supports:
-
-- `Active`, `Expired`, and `Deleted` listing tabs
-- preview-before-delete flow
-- combined refund + combined notification behavior during listing deletion
-
-## Recommendation Cache Note
-
-The recommendation composite caches Gemini reranking results for about 5 minutes.
-
-To bypass cache during development:
-
-```sh
-curl "http://localhost:4000/recommendations/<userId>?noCache=true"
-```
-
-Or disable cache through:
-
-- `composite/recommendation/.env`
-
-## Submission Notes
-
-When submitting the project:
-
-- include all code, Dockerfiles, configuration files, and data files required to run the system
-- include this `README.md`
-- submit the required `.env` files and Firebase key separately as instructed by your team/instructor
-- do not include generated artifacts such as Docker images
+- the recommendation route is rate-limited at Kong to `5 requests per minute per IP`
+- when the frontend receives a `429` on recommendations, it falls back to the last successful recommendation snapshot instead of showing a hard failure
+- Scenario 2 propagates `x-correlation-id` across HTTP calls, RabbitMQ messages, logs, and Stripe session metadata
+- Scenario 3 create-listing is direct UI-to-inventory; only delete-listing uses the composite/orchestrator
 
 ## Troubleshooting
 
-- If services fail at startup with Firebase file read errors, verify that `services/firebase/serviceAccountKey.json` exists and is locally available.
-- If payments do not update after checkout, verify Stripe CLI is forwarding webhooks to `http://localhost:3003/payments/webhook`.
-- If SMS notifications do not send, verify Twilio credentials in `services/notification/.env` and that the target phone numbers are valid.
-- If recommendations fall back to simpler ranking, verify the Gemini key in `composite/recommendation/.env`.
-- If listing images fail to upload, verify the AWS S3 credentials in `services/inventory/.env`.
-- If inventory or reward flows fail, verify access to the external OutSystems endpoints used by those services.
-
-## Notes On Current Behavior
-
-- User-facing orchestration is handled by composite services.
-- The delete-listing flow refunds all affected orders, combines notifications per affected customer, and restores one discount voucher when a refunded order had used one.
-- Deleted listings are archived so restaurants can review them later from the `Deleted` tab.
+- If Firebase-backed services fail at startup, verify that `services/firebase/serviceAccountKey.json` exists and is locally available.
+- If payments do not update after checkout, verify Stripe CLI is forwarding events to `http://localhost:3003/payments/webhook`.
+- If recommendations fall back to simpler ranking, verify the Gemini API key in `composite/get-food-recommendation/.env`.
+- If recommendation requests start returning `429`, wait for the Kong rate-limit window to reset or reuse the cached recommendation snapshot in the UI.
+- If SMS notifications do not send, verify Twilio credentials in `services/notification/.env` and ensure the user has SMS enabled with a valid phone number.
+- If listing images fail to upload, verify the AWS S3 settings in `services/inventory/.env`.
+- If inventory or reward flows fail, verify access to the configured OutSystems endpoints.

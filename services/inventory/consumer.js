@@ -2,14 +2,14 @@ import 'dotenv/config';
 import amqplib from 'amqplib';
 
 const RABBITMQ_URL         = process.env.RABBITMQ_URL             || 'amqp://guest:guest@localhost:5672';
-const PLACE_ORDER_URL      = process.env.PLACE_ORDER_SERVICE_URL  || 'http://localhost:4001';
 const OUTSYSTEMS_BASE      = String(process.env.OUTSYSTEMS_INVENTORY_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 
-const QUEUE = 'order.stock_check';
-const DLQ = 'order.stock_check.dlq';
-const ERROR_QUEUE = 'order.error';
+const QUEUE = 'inventory.check';
+const DLQ = 'inventory.check.dlq';
+const RESULT_QUEUE = 'inventory.result';
+const CORRELATION_HEADER = 'x-correlation-id';
 
 function getOutSystemsBaseUrl() {
   if (!OUTSYSTEMS_BASE) {
@@ -53,13 +53,30 @@ async function decrementOutSystemsListing(itemId, boughtQuantity) {
   return res.ok;
 }
 
-async function processMessage(channel, payload) {
+function getMessageCorrelationId(msg, payload) {
+  return (
+    String(msg?.properties?.headers?.[CORRELATION_HEADER] || '').trim() ||
+    String(payload?.correlationId || '').trim() ||
+    ''
+  );
+}
+
+async function processMessage(channel, payload, correlationId = '') {
   console.log('==============================');
-  console.log('[Consumer] ✅ Message consumed from RabbitMQ queue');
+  console.log(`[Consumer] ✅ Message consumed from RabbitMQ queue cid=${correlationId || 'n/a'}`);
   console.log('[Consumer] Raw payload:', JSON.stringify(payload, null, 2));
   console.log('==============================');
 
-  const { orderId, paymentId, userId, items, amountTotal, currency } = payload;
+  const {
+    orderId,
+    paymentId,
+    paymentIntentId,
+    userId,
+    items,
+    amountTotal,
+    currency,
+    replyTo,
+  } = payload;
 
   const insufficientItems = [];
   const confirmedItems = [];
@@ -73,7 +90,7 @@ async function processMessage(channel, payload) {
     const unitAmountMinor = Number(item.unitAmount ?? 0);
     const requestedItemId = item?.itemId || item?.listingId || item?.id || null;
 
-    console.log(`[Consumer] Checking stock for "${itemName}" (need: ${requestedQty})`);
+    console.log(`[Consumer] Checking stock for "${itemName}" (need: ${requestedQty}) cid=${correlationId || 'n/a'}`);
     const listing = Array.isArray(listings)
       ? (
         (requestedItemId
@@ -131,58 +148,33 @@ async function processMessage(channel, payload) {
   else if (insufficientItems.length === items.length) status = 'failed';
   else                                                status = 'partial';
 
-  console.log(`[Consumer] Stock check complete — status: ${status}`);
+  console.log(`[Consumer] Stock check complete — status: ${status} cid=${correlationId || 'n/a'}`);
 
-  if (status !== 'ok') {
-    try {
-      const errorPayload = {
-        type: 'inventory_conflict',
-        orderId,
-        paymentId,
-        userId,
-        currency,
-        amountTotal,
-        status,
-        confirmedItems,
-        insufficientItems,
-        refundAmount,
-        occurredAt: new Date().toISOString(),
-      };
+  const resultPayload = {
+    orderId,
+    paymentId,
+    paymentIntentId: paymentIntentId || null,
+    userId,
+    currency,
+    status,
+    confirmedItems,
+    insufficientItems,
+    refundAmount,
+    amountTotal,
+    correlationId: correlationId || null,
+  };
 
-      channel.sendToQueue(ERROR_QUEUE, Buffer.from(JSON.stringify(errorPayload)), {
-        persistent: true,
-        contentType: 'application/json',
-      });
-
-      console.log(`[Consumer] Published to ${ERROR_QUEUE}`);
-    } catch (err) {
-      console.error('[Consumer] ❌ Failed to publish to order.error:', err?.message || err);
+  channel.sendToQueue(
+    replyTo || RESULT_QUEUE,
+    Buffer.from(JSON.stringify(resultPayload)),
+    {
+      persistent: true,
+      contentType: 'application/json',
+      headers: correlationId ? { [CORRELATION_HEADER]: correlationId } : {},
     }
-  }
+  );
 
-  // Single delegating call to Place Order orchestrator
-  const res = await fetch(`${PLACE_ORDER_URL}/orders/inventory-result`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      orderId,
-      paymentId,
-      userId,
-      currency,
-      status,
-      confirmedItems,
-      insufficientItems,
-      refundAmount,
-      amountTotal,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Place Order responded ${res.status}: ${errText}`);
-  }
-
-  console.log(`[Consumer] ✅ Place Order notified — order ${orderId} status: ${status}`);
+  console.log(`[Consumer] ✅ Published inventory result for order ${orderId} to ${replyTo || RESULT_QUEUE} cid=${correlationId || 'n/a'}`);
 }
 
 async function startConsumer() {
@@ -202,12 +194,12 @@ async function startConsumer() {
   const channel = await connection.createChannel();
   await channel.assertQueue(QUEUE, { durable: true });
   await channel.assertQueue(DLQ, { durable: true });
-  await channel.assertQueue(ERROR_QUEUE, { durable: true });
+  await channel.assertQueue(RESULT_QUEUE, { durable: true });
   channel.prefetch(1);
 
   console.log(`[Consumer] ✅ Listening on queue: ${QUEUE}`);
   console.log(`[Consumer] DLQ enabled: ${DLQ}`);
-  console.log(`[Consumer] Error queue enabled: ${ERROR_QUEUE}`);
+  console.log(`[Consumer] Result queue enabled: ${RESULT_QUEUE}`);
 
   channel.consume(QUEUE, async (msg) => {
     if (!msg) return;
@@ -222,10 +214,12 @@ async function startConsumer() {
     }
 
     try {
-      await processMessage(channel, payload);
+      const correlationId = getMessageCorrelationId(msg, payload);
+      await processMessage(channel, { ...payload, correlationId }, correlationId);
       channel.ack(msg);
     } catch (err) {
-      console.error('[Consumer] ❌ Processing failed:', err.message);
+      const correlationId = getMessageCorrelationId(msg, payload);
+      console.error(`[Consumer] ❌ Processing failed cid=${correlationId || 'n/a'}:`, err.message);
       try {
         channel.sendToQueue(
           DLQ,
@@ -234,6 +228,7 @@ async function startConsumer() {
             persistent: true,
             contentType: 'application/json',
             headers: {
+              ...(correlationId ? { [CORRELATION_HEADER]: correlationId } : {}),
               'x-error': err?.message || String(err),
               'x-source-queue': QUEUE,
             },

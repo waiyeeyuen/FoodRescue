@@ -111,8 +111,8 @@ async function readResponseBody(response) {
 }
 
 export default function RestaurantListings() {
-  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
   const deleteListingServiceUrl = DELETE_LISTING_SERVICE_URL;
+  const inventoryServiceUrl = INVENTORY_SERVICE_URL;
 
   const { user } = useAuth();
   const restaurantId = user?.id;
@@ -247,7 +247,7 @@ export default function RestaurantListings() {
       if (activeController) activeController.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inventoryServiceUrl, restaurantId]);
+  }, [restaurantId, inventoryServiceUrl]);
 
   const liveRows = useMemo(() => {
     const now = Date.now();

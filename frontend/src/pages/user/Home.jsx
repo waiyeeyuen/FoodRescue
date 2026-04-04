@@ -36,6 +36,42 @@ function getImpactCacheKey(userId) {
   return `impact_profile_${String(userId || '')}`;
 }
 
+function getRecommendationCacheKey(userId) {
+  return `recommendation_snapshot_${String(userId || '')}`;
+}
+
+function readRecommendationSnapshot(userId) {
+  if (!userId) return null;
+
+  try {
+    const raw = localStorage.getItem(getRecommendationCacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      listings: Array.isArray(parsed?.listings) ? parsed.listings : [],
+      geminiUsed: Boolean(parsed?.geminiUsed),
+      geminiReasoning: String(parsed?.geminiReasoning || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeRecommendationSnapshot(userId, snapshot) {
+  if (!userId) return;
+
+  try {
+    localStorage.setItem(
+      getRecommendationCacheKey(userId),
+      JSON.stringify({
+        listings: Array.isArray(snapshot?.listings) ? snapshot.listings : [],
+        geminiUsed: Boolean(snapshot?.geminiUsed),
+        geminiReasoning: String(snapshot?.geminiReasoning || ''),
+      })
+    );
+  } catch {}
+}
+
 function normalizeImpactSnapshot(impact) {
   const safeImpact = impact && typeof impact === 'object' ? impact : {};
   return {
@@ -327,44 +363,46 @@ export default function UserHome() {
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadListings() {
+    async function loadInventoryListings() {
       setListingsLoading(true);
-      setRecommendationsLoading(Boolean(user?.id));
       setListingsError(null);
-      setRecommendationsError(null);
 
-      const inventoryPromise = fetch(`${inventoryServiceUrl}/inventory/active`, {
-        signal: controller.signal,
-      })
-        .then(async (inventoryRes) => {
-          if (!inventoryRes.ok) {
-            let message = 'Failed to load active listings';
-            try {
-              const body = await inventoryRes.json();
-              message = body?.error || message;
-            } catch {}
-            throw new Error(message);
-          }
-
-          const inventoryData = await inventoryRes.json();
-          return Array.isArray(inventoryData?.data)
-            ? inventoryData.data
-            : Array.isArray(inventoryData)
-              ? inventoryData
-              : [];
-        })
-        .then((inventoryListings) => {
-          if (controller.signal.aborted) return;
-          setActiveListings(inventoryListings);
-        })
-        .catch((e) => {
-          if (e?.name === 'AbortError' || controller.signal.aborted) return;
-          setListingsError(e?.message || 'Failed to load active listings');
-          setActiveListings([]);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setListingsLoading(false);
+      try {
+        const inventoryRes = await fetch(`${inventoryServiceUrl}/inventory/active`, {
+          signal: controller.signal,
         });
+
+        if (!inventoryRes.ok) {
+          let message = 'Failed to load active listings';
+          try {
+            const body = await inventoryRes.json();
+            message = body?.error || message;
+          } catch {}
+          throw new Error(message);
+        }
+
+        const inventoryData = await inventoryRes.json();
+        const inventoryListings = Array.isArray(inventoryData?.data)
+          ? inventoryData.data
+          : Array.isArray(inventoryData)
+            ? inventoryData
+            : [];
+
+        if (!controller.signal.aborted) {
+          setActiveListings(inventoryListings);
+        }
+      } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) return;
+        setListingsError(e?.message || 'Failed to load active listings');
+        setActiveListings([]);
+      } finally {
+        if (!controller.signal.aborted) setListingsLoading(false);
+      }
+    }
+
+    async function loadRecommendations() {
+      setRecommendationsLoading(Boolean(user?.id));
+      setRecommendationsError(null);
 
       const recommendationsPromise = user?.id
         ? fetch(
@@ -373,7 +411,14 @@ export default function UserHome() {
           )
             .then(async (recRes) => {
               if (!recRes.ok) {
-                throw new Error('Failed to load recommendations');
+                let message = 'Failed to load recommendations';
+                try {
+                  const body = await recRes.json();
+                  message = body?.error || message;
+                } catch {}
+                const error = new Error(message);
+                error.status = recRes.status;
+                throw error;
               }
 
               const recData = await recRes.json();
@@ -405,9 +450,22 @@ export default function UserHome() {
               setRecommendedListings(recommendationResult.listings);
               setGeminiUsed(recommendationResult.geminiUsed);
               setGeminiReasoning(recommendationResult.geminiReasoning);
+              writeRecommendationSnapshot(user.id, recommendationResult);
             })
             .catch((e) => {
               if (e?.name === 'AbortError' || controller.signal.aborted) return;
+
+              if (e?.status === 429) {
+                const cachedRecommendations = readRecommendationSnapshot(user.id);
+                if (cachedRecommendations) {
+                  setRecommendedListings(cachedRecommendations.listings);
+                  setGeminiUsed(cachedRecommendations.geminiUsed);
+                  setGeminiReasoning(cachedRecommendations.geminiReasoning);
+                }
+                setRecommendationsError(null);
+                return;
+              }
+
               setRecommendationsError(e?.message || 'Failed to load recommendations');
               setRecommendedListings([]);
               setGeminiUsed(false);
@@ -425,17 +483,18 @@ export default function UserHome() {
           });
 
       try {
-        await Promise.all([inventoryPromise, recommendationsPromise]);
+        await recommendationsPromise;
       } catch (e) {
         if (e?.name === 'AbortError') return;
       }
     }
 
-    loadListings();
+    loadInventoryListings();
+    loadRecommendations();
 
-    const handleFocus = () => loadListings();
+    const handleFocus = () => loadInventoryListings();
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') loadListings();
+      if (document.visibilityState === 'visible') loadInventoryListings();
     };
 
     window.addEventListener('focus', handleFocus);

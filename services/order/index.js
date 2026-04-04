@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import { randomUUID } from 'crypto'
 import { db } from './firebaseAdmin.js'
 
 const app = express()
@@ -15,11 +16,37 @@ const NOTIFICATION_SERVICE_URL =
 const corsOptions = {
   origin: ["http://localhost:3000", "http://localhost:5173"],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
 };
+const CORRELATION_HEADER = 'x-correlation-id'
 
 app.use(cors(corsOptions))
 app.use(express.json())
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()]
+  return String(Array.isArray(value) ? value[0] : value || '').trim()
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = '') {
+  if (!correlationId) return { ...headers }
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  }
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || `${serviceName}:${randomUUID()}`
+    req.correlationId = correlationId
+    res.setHeader(CORRELATION_HEADER, correlationId)
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`)
+    next()
+  }
+}
+
+app.use(correlationMiddleware('order'))
 
 const ORDERS = db.collection('orders')
 
@@ -69,8 +96,11 @@ async function readBody(response) {
   }
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options)
+async function fetchJson(url, options = {}, correlationId = '') {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  })
   const data = await readBody(response)
 
   if (!response.ok) {
@@ -226,17 +256,17 @@ function getEstimatedMoneySaved(item) {
   return Number(((originalPrice - unitAmount) * quantity).toFixed(2))
 }
 
-function fireAndForgetNotification(body) {
+function fireAndForgetNotification(body, correlationId = '') {
   fetch(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCorrelationHeaders({ 'Content-Type': 'application/json' }, correlationId),
     body: JSON.stringify(body),
   }).catch((err) => {
-    console.warn('[order] Notification fire-and-forget failed:', err.message)
+    console.warn(`[order] Notification fire-and-forget failed cid=${correlationId || 'n/a'}:`, err.message)
   })
 }
 
-async function applyCompletedPickupImpact({ order, item, completedAt }) {
+async function applyCompletedPickupImpact({ order, item, completedAt, correlationId = '' }) {
   const customerId = String(order?.customerId || '')
   const restaurantId = String(getItemField(item, 'restaurantId', 'RestaurantId') || '')
   if (!customerId && !restaurantId) return
@@ -257,7 +287,7 @@ async function applyCompletedPickupImpact({ order, item, completedAt }) {
       paidAmount: Number.isFinite(paidAmount) ? paidAmount : 0,
       completedAt: completedAt?.toISOString?.() || new Date().toISOString(),
     }),
-  })
+  }, correlationId)
 }
 
 // CREATE ORDER
@@ -651,14 +681,15 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
         userId: customerId,
         type: 'ORDER_READY',
         orderId
-      })
+      }, req.correlationId)
     }
 
     if (nextStatus === 'completed' && previousStatus !== 'completed' && nextMatchedItem) {
       await applyCompletedPickupImpact({
         order: { ...data, customerId: data.customerId },
         item: nextMatchedItem,
-        completedAt: now
+        completedAt: now,
+        correlationId: req.correlationId,
       });
     }
 
@@ -667,7 +698,7 @@ app.patch('/orders/:orderId/items/:itemId/status', async (req, res) => {
         userId: customerId,
         type: 'ORDER_COMPLETED',
         orderId
-      })
+      }, req.correlationId)
     }
 
     res.json({

@@ -6,10 +6,42 @@ import {
 } from "../services/paymentRepository.js";
 import { createStripeCheckoutSession, createStripeRefund, stripe } from "../services/stripeService.js";
 import { config } from "../utils/config.js";
-import { publishToQueue, QUEUES } from "../utils/rabbitmq.js";
+
+const PLACE_ORDER_SERVICE_URL = process.env.PLACE_ORDER_SERVICE_URL || "http://localhost:4001";
+const CORRELATION_HEADER = "x-correlation-id";
 
 function calculateAmountTotal(items) {
   return items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0);
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function getSessionCorrelationId(session) {
+  return String(session?.metadata?.correlationId || "").trim();
+}
+
+async function readBody(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  if (!raw) return null;
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function hasRefundState(payment) {
@@ -97,6 +129,7 @@ export async function getPaymentByOrderId(req, res) {
 
 export async function createCheckoutSession(req, res) {
   try {
+    const correlationId = req.correlationId || "";
     const { orderId, userId, items, currency, successUrl, cancelUrl, reward } = req.body;
 
     if (!orderId || !userId || !items || !Array.isArray(items) || items.length === 0) {
@@ -112,12 +145,13 @@ export async function createCheckoutSession(req, res) {
     const finalSuccessUrl = successUrl || `${config.frontendSuccessUrl}?session_id={CHECKOUT_SESSION_ID}`;
     const finalCancelUrl = cancelUrl || config.frontendCancelUrl;
 
-    console.log('[Checkout] Creating session for orderId:', orderId, '| userId:', userId);
+    console.log('[Checkout] Creating session for orderId:', orderId, '| userId:', userId, '| cid:', correlationId);
     console.log('[Checkout] Items:', JSON.stringify(items, null, 2));
     console.log('[Checkout] successUrl:', finalSuccessUrl);
 
     const session = await createStripeCheckoutSession({
       paymentId, orderId, userId,
+      correlationId,
       currency: currency || "sgd",
       items,
       successUrl: finalSuccessUrl,
@@ -138,6 +172,7 @@ export async function createCheckoutSession(req, res) {
       stripePaymentIntentId: null,
       checkoutUrl: session.url,
       source: "stripe_checkout",
+      correlationId,
       webhookEventType: "",
       refundStatus: "not_requested",
       refundId: "", refundAmount: 0, refundReason: "",
@@ -146,11 +181,11 @@ export async function createCheckoutSession(req, res) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    console.log('[Checkout] ✅ Payment record saved to Firestore');
+    console.log('[Checkout] ✅ Payment record saved to Firestore cid=', correlationId);
 
-    res.status(201).json({ paymentId, status: "pending", checkoutUrl: session.url });
+    res.status(201).json({ paymentId, status: "pending", checkoutUrl: session.url, correlationId });
   } catch (error) {
-    console.error('[Checkout] ❌ Error:', error.message);
+    console.error('[Checkout] ❌ Error cid=', req.correlationId || "n/a", ':', error.message);
     res.status(500).json({ error: "Failed to create checkout session", details: error.message });
   }
 }
@@ -202,6 +237,48 @@ export async function refundPayment(req, res) {
   }
 }
 
+export async function recordRefundResult(req, res) {
+  try {
+    const { paymentId } = req.params;
+    const {
+      refundId = "",
+      refundStatus = "succeeded",
+      refundAmount,
+      refundReason = "",
+    } = req.body || {};
+
+    const payment = await getPaymentByIdFromDb(paymentId);
+    if (!payment) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
+    const normalizedRefundAmount =
+      Number(refundAmount ?? payment.amountTotal ?? 0) || Number(payment.amountTotal || 0) || 0;
+    const originalAmount = Number(payment.amountTotal || 0) || 0;
+    const fullRefund = normalizedRefundAmount >= originalAmount;
+
+    const updatedPayment = await updatePayment(paymentId, {
+      status: fullRefund ? "refunded" : "partially_refunded",
+      refundStatus: refundStatus || "succeeded",
+      refundId: String(refundId || ""),
+      refundAmount: normalizedRefundAmount,
+      refundReason: String(refundReason || ""),
+      refundCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return res.json({
+      success: true,
+      payment: updatedPayment,
+    });
+  } catch (error) {
+    console.error("[Refund Sync] ❌ Error:", error.message);
+    return res.status(500).json({
+      error: "Failed to sync refund result",
+      details: error.message,
+    });
+  }
+}
+
 export async function logPayment(req, res) {
   try {
     const { orderId, paymentId, amount, status } = req.body;
@@ -225,17 +302,30 @@ export async function logPayment(req, res) {
   }
 }
 
-async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session }) {
-  if (!paymentId || !orderId) return { published: false, reason: 'missing_data' };
+async function notifyPlaceOrderIfNeeded({
+  paymentId,
+  orderId,
+  userId,
+  paymentRecord,
+  session,
+  correlationId = "",
+}) {
+  if (!paymentId || !orderId) return { notified: false, reason: 'missing_data' };
 
-  if (paymentRecord?.stockCheckPublishedAt || paymentRecord?.stockCheckPublished) {
-    console.log('[Payment] Stock check already published for paymentId:', paymentId);
-    return { published: false, reason: 'already_published' };
+  if (
+    paymentRecord?.placeOrderNotifiedAt ||
+    paymentRecord?.placeOrderNotified ||
+    paymentRecord?.stockCheckPublishedAt ||
+    paymentRecord?.stockCheckPublished
+  ) {
+    console.log('[Payment] Place Order already notified for paymentId:', paymentId);
+    return { notified: false, reason: 'already_notified' };
   }
 
   let items = Array.isArray(paymentRecord?.items) ? paymentRecord.items : [];
   let amountTotal = Number(paymentRecord?.amountTotal ?? NaN);
   let currency = paymentRecord?.currency;
+  let paymentIntentId = session?.payment_intent || paymentRecord?.stripePaymentIntentId || null;
 
   if ((!items || items.length === 0) && session?.id) {
     try {
@@ -244,6 +334,7 @@ async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRe
         ? amountTotal
         : Number(session.amount_total ?? calculateAmountTotal(items));
       currency = currency || session.currency;
+      paymentIntentId = paymentIntentId || session.payment_intent || null;
       console.warn('[Payment] Payment record missing items; falling back to Stripe line_items.');
     } catch (err) {
       console.error('[Payment] ❌ Failed to fetch Stripe line_items:', err?.message || err);
@@ -251,41 +342,71 @@ async function publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRe
   }
 
   if (!Array.isArray(items) || items.length === 0) {
-    console.error('[Payment] ❌ Cannot publish stock check: missing items');
-    return { published: false, reason: 'missing_items' };
+    console.error('[Payment] ❌ Cannot notify Place Order: missing items');
+    return { notified: false, reason: 'missing_items' };
   }
 
   if (!Number.isFinite(amountTotal)) {
     amountTotal = calculateAmountTotal(items);
   }
 
-  const queuePayload = {
+  const requestPayload = {
     orderId,
     paymentId,
+    paymentIntentId,
     userId,
     currency: currency || 'sgd',
     amountTotal,
     items,
   };
 
-  console.log('[Payment] Publishing stock check to queue:', JSON.stringify(queuePayload, null, 2));
-  await publishToQueue(QUEUES.ORDER_STOCK_CHECK, queuePayload);
+  const resolvedCorrelationId =
+    String(correlationId || "").trim() ||
+    String(paymentRecord?.correlationId || "").trim() ||
+    getSessionCorrelationId(session);
+
+  console.log(
+    `[Payment] Notifying Place Order cid=${resolvedCorrelationId || "n/a"}:`,
+    JSON.stringify(requestPayload, null, 2)
+  );
+  const response = await fetch(`${PLACE_ORDER_SERVICE_URL}/orders/payment-confirmed`, {
+    method: 'POST',
+    headers: withCorrelationHeaders({ 'Content-Type': 'application/json' }, resolvedCorrelationId),
+    body: JSON.stringify(requestPayload),
+  });
+  const responseBody = await readBody(response);
+
+  if (!response.ok) {
+    const error = new Error(
+      (responseBody && responseBody.error) || `Place Order responded ${response.status}`
+    );
+    error.status = response.status;
+    error.data = responseBody;
+    throw error;
+  }
 
   const paymentUpdates = {
-    stockCheckPublished: true,
-    stockCheckPublishedAt: admin.firestore.FieldValue.serverTimestamp(),
+    placeOrderNotified: true,
+    placeOrderNotifiedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
   if (!paymentRecord?.items || paymentRecord.items.length === 0) paymentUpdates.items = items;
   if (paymentRecord?.amountTotal == null) paymentUpdates.amountTotal = amountTotal;
   if (!paymentRecord?.currency && currency) paymentUpdates.currency = currency;
+  if (!paymentRecord?.stripePaymentIntentId && paymentIntentId) {
+    paymentUpdates.stripePaymentIntentId = paymentIntentId;
+  }
+  if (!paymentRecord?.correlationId && resolvedCorrelationId) {
+    paymentUpdates.correlationId = resolvedCorrelationId;
+  }
 
   await createOrUpdatePayment(paymentId, paymentUpdates);
 
-  return { published: true };
+  return { notified: true };
 }
 
 export async function confirmCheckoutSession(req, res) {
   try {
+    const requestCorrelationId = req.correlationId || "";
     const { sessionId } = req.body || {};
     if (!sessionId) {
       return res.status(400).json({ error: 'sessionId is required' });
@@ -310,11 +431,16 @@ export async function confirmCheckoutSession(req, res) {
     }
 
     const existingPayment = await getPaymentByIdFromDb(paymentId);
+    const correlationId =
+      requestCorrelationId ||
+      getSessionCorrelationId(session) ||
+      String(existingPayment?.correlationId || "").trim();
     const preserveRefundState = hasRefundState(existingPayment);
     const paymentUpdates = {
       stripeSessionId: session.id,
       stripePaymentIntentId:
         session.payment_intent || existingPayment?.stripePaymentIntentId || null,
+      correlationId,
     };
 
     if (!preserveRefundState) {
@@ -332,10 +458,17 @@ export async function confirmCheckoutSession(req, res) {
     }
 
     const paymentRecord = await retryGetPayment(paymentId);
-    const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
+    const result = await notifyPlaceOrderIfNeeded({
+      paymentId,
+      orderId,
+      userId,
+      paymentRecord,
+      session,
+      correlationId,
+    });
 
-    if (!result.published && result.reason !== 'already_published') {
-      return res.status(500).json({ error: 'Failed to publish stock check', reason: result.reason });
+    if (!result.notified && result.reason !== 'already_notified') {
+      return res.status(500).json({ error: 'Failed to notify place-order', reason: result.reason });
     }
 
     return res.json({
@@ -355,6 +488,7 @@ export async function confirmCheckoutSession(req, res) {
 export async function handleStripeWebhook(req, res) {
   const signature = req.headers["stripe-signature"];
   let event;
+  const requestCorrelationId = req.correlationId || "";
 
   try {
     event = stripe.webhooks.constructEvent(req.body, signature, config.stripeWebhookSecret);
@@ -363,7 +497,7 @@ export async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 
-  console.log('[Webhook] Event received:', event.type);
+  console.log('[Webhook] Event received:', event.type, '| cid:', requestCorrelationId || "n/a");
 
   try {
     switch (event.type) {
@@ -373,11 +507,14 @@ export async function handleStripeWebhook(req, res) {
         const paymentId = session.metadata?.paymentId;
         const orderId   = session.metadata?.orderId;
         const userId    = session.metadata?.userId;
+        const correlationId =
+          requestCorrelationId ||
+          getSessionCorrelationId(session);
 
         console.log('==============================');
         console.log('[Webhook] ✅ checkout.session.completed received');
         console.log('[Webhook] Session ID:', session.id);
-        console.log('[Webhook] Metadata:', { paymentId, orderId, userId });
+        console.log('[Webhook] Metadata:', { paymentId, orderId, userId, correlationId });
         console.log('==============================');
 
         if (paymentId) {
@@ -386,7 +523,9 @@ export async function handleStripeWebhook(req, res) {
           const paymentUpdates = {
             stripeSessionId: session.id,
             stripePaymentIntentId:
-              session.payment_intent || existingPayment?.stripePaymentIntentId || null
+              session.payment_intent || existingPayment?.stripePaymentIntentId || null,
+            correlationId:
+              correlationId || String(existingPayment?.correlationId || "").trim(),
           };
 
           if (!preserveRefundState) {
@@ -410,21 +549,28 @@ export async function handleStripeWebhook(req, res) {
 
         if (orderId) {
           try {
-            const result = await publishStockCheckIfNeeded({ paymentId, orderId, userId, paymentRecord, session });
-            if (result.published) {
-              console.log('[Webhook] ✅ Published stock check to RabbitMQ');
+            const result = await notifyPlaceOrderIfNeeded({
+              paymentId,
+              orderId,
+              userId,
+              paymentRecord,
+              session,
+              correlationId,
+            });
+            if (result.notified) {
+              console.log('[Webhook] ✅ Place Order notified cid=', correlationId || "n/a");
             } else {
-              console.log('[Webhook] Skipped stock check publish:', result.reason);
-              if (result.reason !== 'already_published') {
-                throw new Error(`stock_check_publish_${result.reason}`);
+              console.log('[Webhook] Skipped Place Order notification:', result.reason, '| cid:', correlationId || "n/a");
+              if (result.reason !== 'already_notified') {
+                throw new Error(`place_order_notify_${result.reason}`);
               }
             }
           } catch (err) {
-            console.error('[Webhook] ❌ RabbitMQ publish failed:', err);
+            console.error('[Webhook] ❌ Place Order notification failed cid=', correlationId || "n/a", ':', err);
             throw err;
           }
         } else {
-          console.log('[Webhook] ❌ Skipped RabbitMQ publish');
+          console.log('[Webhook] ❌ Skipped Place Order notification');
           console.log('[Webhook]    orderId:', orderId);
           console.log('[Webhook]    paymentRecord exists:', !!paymentRecord);
         }

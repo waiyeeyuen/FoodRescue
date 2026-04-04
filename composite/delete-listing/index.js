@@ -1,6 +1,9 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
@@ -11,12 +14,162 @@ const INVENTORY_SERVICE_URL =
   process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
 const ORDER_SERVICE_URL =
   process.env.ORDER_SERVICE_URL || "http://localhost:3004";
-const PAYMENT_SERVICE_URL =
-  process.env.PAYMENT_SERVICE_URL || "http://localhost:3003";
+const REFUND_MANAGEMENT_SERVICE_URL =
+  process.env.REFUND_MANAGEMENT_SERVICE_URL || "http://localhost:3007";
 const NOTIFICATION_SERVICE_URL =
   process.env.NOTIFICATION_SERVICE_URL || "http://localhost:3006";
 const REWARD_SERVICE_URL =
   process.env.REWARD_SERVICE_URL || "http://localhost:3005";
+const CORRELATION_HEADER = "x-correlation-id";
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Delete Listing Composite API",
+      version: "1.0.0",
+      description:
+        "Orchestrates listing deletion, refunds, reward restoration, and customer notifications.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct composite-delete-listing service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [
+      { name: "Delete Listing", description: "Delete listing orchestration endpoint" },
+    ],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string" },
+            details: { nullable: true },
+          },
+        },
+        DeletePreviewResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            listing: {
+              type: "object",
+              properties: {
+                listingId: { type: "string" },
+                restaurantId: { type: "string" },
+                restaurantName: { type: "string" },
+                itemName: { type: "string" },
+                quantity: { type: "number" },
+                price: { type: "number" },
+                expiryTime: { type: "string" },
+                cuisineType: { type: "string" },
+              },
+            },
+            summary: {
+              type: "object",
+              properties: {
+                affectedOrders: { type: "number" },
+                affectedCustomers: { type: "number" },
+                totalListingUnits: { type: "number" },
+                requiresRefunds: { type: "boolean" },
+                totalRefundAmountMinor: { type: "number" },
+                totalRefundAmount: { type: "number" },
+              },
+            },
+            affectedOrders: {
+              type: "array",
+              items: { type: "object" },
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      "/delete-listing/{listingId}": {
+        post: {
+          tags: ["Delete Listing"],
+          summary: "Delete listing",
+          description:
+            "Gateway copy-paste URL: http://localhost:8000/delete-listing/{listingId}",
+          parameters: [
+            {
+              in: "path",
+              name: "listingId",
+              required: true,
+              schema: { type: "string", example: "125" },
+            },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["restaurantId"],
+                  properties: {
+                    restaurantId: { type: "string", example: "18CXbYrzy0o2v5BbHEUq" },
+                    restaurantName: { type: "string", example: "Korean Jap Bites" },
+                    reason: { type: "string", example: "manual test delete" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Listing deleted and orchestration completed",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      success: { type: "boolean" },
+                      listingDeleted: { type: "boolean" },
+                      listing: { type: "object" },
+                      summary: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description: "Invalid request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: {
+              description: "Listing not found",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 const corsOrigins = (process.env.CORS_ORIGINS ||
   "http://localhost:3000,http://localhost:5173")
@@ -30,6 +183,40 @@ app.use(
   })
 );
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function createCorrelationId(scope = "delete-listing") {
+  return `${scope}:${randomUUID()}`;
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || createCorrelationId(serviceName);
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("delete-listing"));
+
+app.get("/delete-listing-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use("/delete-listing-api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 function getField(item, ...keys) {
   for (const key of keys) {
@@ -90,8 +277,11 @@ async function readBody(response) {
   }
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options = {}, correlationId = "") {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  });
   const data = await readBody(response);
 
   if (!response.ok) {
@@ -127,9 +317,11 @@ function buildListingSummary(listing) {
   };
 }
 
-async function getListingForRestaurant({ listingId, restaurantId }) {
+async function getListingForRestaurant({ listingId, restaurantId, correlationId = "" }) {
   const listings = await fetchJson(
-    `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(restaurantId)}`
+    `${INVENTORY_SERVICE_URL}/inventory/restaurant/${encodeURIComponent(restaurantId)}`,
+    {},
+    correlationId
   );
 
   const matched = Array.isArray(listings)
@@ -150,6 +342,7 @@ async function getAffectedOrders({
   restaurantId,
   restaurantName = "",
   includeCompleted = true,
+  correlationId = "",
 }) {
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
@@ -160,28 +353,27 @@ async function getAffectedOrders({
   return fetchJson(
     `${ORDER_SERVICE_URL}/orders/listings/${encodeURIComponent(listingId)}/affected${
       query ? `?${query}` : ""
-    }`
+    }`,
+    {},
+    correlationId
   );
 }
 
-async function getPaymentForOrder(orderId) {
-  return fetchJson(
-    `${PAYMENT_SERVICE_URL}/payments/order/${encodeURIComponent(orderId)}`
-  );
-}
-
-async function refundPayment({ paymentId, amountMinor, reason }) {
-  return fetchJson(
-    `${PAYMENT_SERVICE_URL}/payments/${encodeURIComponent(paymentId)}/refund`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amount: amountMinor,
-        reason,
-      }),
-    }
-  );
+async function processRefund({
+  orderId,
+  amountMinor,
+  reason,
+  correlationId = "",
+}) {
+  return fetchJson(`${REFUND_MANAGEMENT_SERVICE_URL}/refund-management/refund`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderId,
+      amountMinor,
+      reason,
+    }),
+  }, correlationId);
 }
 
 async function markOrderItemRefunded({
@@ -192,6 +384,7 @@ async function markOrderItemRefunded({
   reason,
   refundAmount,
   paymentId,
+  correlationId = "",
 }) {
   return fetchJson(
     `${ORDER_SERVICE_URL}/orders/${encodeURIComponent(orderId)}/items/${encodeURIComponent(
@@ -208,7 +401,8 @@ async function markOrderItemRefunded({
         refundAmount,
         paymentId,
       }),
-    }
+    },
+    correlationId
   );
 }
 
@@ -219,6 +413,7 @@ async function deleteInventoryListing({
   restaurantId,
   restaurantName,
   reason,
+  correlationId = "",
 }) {
   return fetchJson(
     `${INVENTORY_SERVICE_URL}/inventory/listings/${encodeURIComponent(listingId)}`,
@@ -232,7 +427,8 @@ async function deleteInventoryListing({
         restaurantName,
         reason,
       }),
-    }
+    },
+    correlationId
   );
 }
 
@@ -323,6 +519,7 @@ async function restoreRewardVoucher({
   listingId,
   orderIds,
   paymentIds,
+  correlationId = "",
 }) {
   const restoreKey = `delete_listing:${String(listingId || "").trim()}:${String(userId || "").trim()}`;
 
@@ -338,7 +535,7 @@ async function restoreRewardVoucher({
       sourcePaymentIds: Array.isArray(paymentIds) ? paymentIds : [],
       reason: "listing_deleted_refund",
     }),
-  });
+  }, correlationId);
 }
 
 async function sendChannelNotification({
@@ -349,6 +546,7 @@ async function sendChannelNotification({
   channel,
   quantity,
   orderCount,
+  correlationId = "",
 }) {
   const restaurantName =
     String(getField(listing, "restaurantName", "RestaurantName") || "").trim() ||
@@ -381,7 +579,7 @@ async function sendChannelNotification({
         quantity,
       },
     }),
-  });
+  }, correlationId);
 
   const status = String(response?.status || "").toUpperCase();
   const acceptedStatuses = channel === "SMS" ? ["SENT", "SKIPPED"] : ["STORED"];
@@ -404,6 +602,7 @@ async function sendDualRefundNotifications({
   currency,
   quantity,
   orderCount,
+  correlationId = "",
 }) {
   const outcomes = [];
 
@@ -417,6 +616,7 @@ async function sendDualRefundNotifications({
         channel,
         quantity,
         orderCount,
+        correlationId,
       });
       outcomes.push({ channel, success: true });
     } catch (error) {
@@ -446,13 +646,15 @@ async function loadDeleteContext({
   listingId,
   restaurantId,
   restaurantName = "",
+  correlationId = "",
 }) {
-  const listing = await getListingForRestaurant({ listingId, restaurantId });
+  const listing = await getListingForRestaurant({ listingId, restaurantId, correlationId });
   const affectedOrders = await getAffectedOrders({
     listingId,
     restaurantId,
     restaurantName,
     includeCompleted: true,
+    correlationId,
   });
 
   return { listing, affectedOrders };
@@ -482,68 +684,61 @@ async function handleDeleteListing(req, res) {
   };
 
   try {
+    const correlationId = req.correlationId;
     const { listing, affectedOrders } = await loadDeleteContext({
       listingId,
       restaurantId,
       restaurantName,
+      correlationId,
     });
-
-    const plannedRefunds = [];
-
-    for (const order of affectedOrders?.orders || []) {
-      const payment = await getPaymentForOrder(order.orderId);
-
-      if (!payment?.paymentId) {
-        const error = new Error(`Missing payment record for order ${order.orderId}`);
-        error.status = 502;
-        throw error;
-      }
-
-      plannedRefunds.push({
-        order,
-        paymentId: payment.paymentId,
-        payment,
-      });
-    }
 
     const refundReason = buildRefundReason({ listing, customReason: reason });
 
-    for (const plan of plannedRefunds) {
-      const totalRefundAmountMinor = Number(plan.order?.totalRefundAmountMinor || 0);
-      const totalRefundAmount = Number(plan.order?.totalRefundAmount || 0);
+    for (const order of affectedOrders?.orders || []) {
+      const totalRefundAmountMinor = Number(order?.totalRefundAmountMinor || 0);
+      const totalRefundAmount = Number(order?.totalRefundAmount || 0);
 
       if (totalRefundAmountMinor <= 0) {
         continue;
       }
 
-      await refundPayment({
-        paymentId: plan.paymentId,
+      const refundResponse = await processRefund({
+        orderId: order.orderId,
         amountMinor: totalRefundAmountMinor,
         reason: refundReason,
+        correlationId,
       });
 
-      for (const item of plan.order?.items || []) {
+      const paymentId = String(refundResponse?.paymentId || "").trim();
+      if (!paymentId) {
+        const error = new Error(`Missing paymentId in refund response for order ${order.orderId}`);
+        error.status = 502;
+        throw error;
+      }
+
+      for (const item of order?.items || []) {
         await markOrderItemRefunded({
-          orderId: plan.order.orderId,
+          orderId: order.orderId,
           itemId: item.itemId,
           restaurantId,
           restaurantName,
           reason: refundReason,
           refundAmount: Number(item.refundAmount || 0),
-          paymentId: plan.paymentId,
+          paymentId,
+          correlationId,
         });
       }
 
       results.refundsProcessed.push({
-        orderId: plan.order.orderId,
-        paymentId: plan.paymentId,
-        customerId: plan.order.customerId,
-        currency: plan.order.currency || "sgd",
+        orderId: order.orderId,
+        paymentId,
+        customerId: order.customerId,
+        currency: order.currency || "sgd",
         refundAmountMinor: totalRefundAmountMinor,
         refundAmount: totalRefundAmount,
-        listingQuantity: sumListingQuantity(plan.order?.items),
-        rewardUsed: hasUsedReward(plan.payment),
-        rewardVoucherId: String(plan.payment?.reward?.voucherId || ""),
+        listingQuantity: sumListingQuantity(order?.items),
+        rewardUsed: hasUsedReward({ reward: refundResponse?.reward || null }),
+        rewardVoucherId: String(refundResponse?.reward?.voucherId || ""),
       });
     }
 
@@ -588,6 +783,7 @@ async function handleDeleteListing(req, res) {
           listingId,
           orderIds: rewardEntry.orderIds,
           paymentIds: rewardEntry.paymentIds,
+          correlationId,
         });
 
         results.rewardsRestored.push({
@@ -614,6 +810,7 @@ async function handleDeleteListing(req, res) {
         currency: notificationEntry.currency,
         quantity: notificationEntry.listingQuantity,
         orderCount: notificationEntry.orderIds.length,
+        correlationId,
       });
 
       outcomes.forEach((outcome) => {
@@ -662,6 +859,7 @@ async function handleDeleteListing(req, res) {
       restaurantId,
       restaurantName,
       reason: refundReason,
+      correlationId,
     });
     results.success = true;
     results.listingDeleted = true;
@@ -691,6 +889,7 @@ app.get("/health", (req, res) => {
 
 async function handleDeletePreview(req, res) {
   try {
+    const correlationId = req.correlationId;
     const { listingId } = req.params;
     const { restaurantId = "", restaurantName = "" } = req.query;
 
@@ -702,6 +901,7 @@ async function handleDeletePreview(req, res) {
       listingId,
       restaurantId,
       restaurantName,
+      correlationId,
     });
 
     return res.json(buildPreviewResponse(payload));

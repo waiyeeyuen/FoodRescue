@@ -1,6 +1,9 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
+import { randomUUID } from "crypto";
 
 dotenv.config();
 
@@ -11,6 +14,162 @@ const ORDER_SERVICE_URL = process.env.ORDER_SERVICE_URL || "http://localhost:300
 const INVENTORY_SERVICE_URL = process.env.INVENTORY_SERVICE_URL || "http://localhost:3000";
 const REWARD_SERVICE_URL = process.env.REWARD_SERVICE_URL || "http://localhost:3005";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const CORRELATION_HEADER = "x-correlation-id";
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Get Food Recommendation Composite API",
+      version: "1.0.0",
+      description:
+        "Aggregates order history, inventory, reward eligibility, and Gemini ranking to return food recommendations.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct composite-get-food-recommendation service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [{ name: "Recommendations", description: "Recommendation endpoints" }],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string" },
+            details: { nullable: true },
+          },
+        },
+        RecommendationResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean" },
+            userId: { type: "string" },
+            stampsCount: { type: "number" },
+            rewardEligibility: { type: "object" },
+            signals: { type: "object" },
+            gemini: { type: "object" },
+            recommendedListings: {
+              type: "array",
+              items: { type: "object" },
+            },
+            fallbackListings: {
+              type: "array",
+              items: { type: "object" },
+            },
+          },
+        },
+      },
+    },
+    paths: {
+      "/health": {
+        get: {
+          tags: ["Recommendations"],
+          summary: "Health check",
+          responses: {
+            200: {
+              description: "Service health status",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      status: { type: "string", example: "ok" },
+                      service: {
+                        type: "string",
+                        example: "composite-get-food-recommendation",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/recommendations/{userId}": {
+        get: {
+          tags: ["Recommendations"],
+          summary: "Get food recommendations for a user",
+          description:
+            "Gateway copy-paste URL: http://localhost:8000/recommendations/{userId}",
+          parameters: [
+            {
+              in: "path",
+              name: "userId",
+              required: true,
+              schema: { type: "string", example: "user_123" },
+            },
+            {
+              in: "query",
+              name: "includeActive",
+              required: false,
+              schema: { type: "boolean", default: true },
+            },
+            {
+              in: "query",
+              name: "maxListings",
+              required: false,
+              schema: { type: "integer", default: 4, minimum: 1, maximum: 200 },
+            },
+            {
+              in: "query",
+              name: "maxSignals",
+              required: false,
+              schema: { type: "integer", default: 5, minimum: 1, maximum: 20 },
+            },
+            {
+              in: "query",
+              name: "listingIds",
+              required: false,
+              schema: {
+                type: "string",
+                example: "listing1,listing2",
+                description: "Comma-separated listing IDs to filter ranking candidates.",
+              },
+            },
+            {
+              in: "query",
+              name: "noCache",
+              required: false,
+              schema: {
+                type: "boolean",
+                default: false,
+                description: "Bypass Gemini cache for this request.",
+              },
+            },
+          ],
+          responses: {
+            200: {
+              description: "Recommendations generated successfully",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/RecommendationResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Unexpected server error",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 console.log("Gemini key loaded:", GEMINI_API_KEY?.slice(0, 8) + "...");
 
@@ -21,6 +180,44 @@ const corsOrigins = (process.env.CORS_ORIGINS || "http://localhost:3000,http://l
 
 app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
+
+function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
+  const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
+  return String(Array.isArray(value) ? value[0] : value || "").trim();
+}
+
+function createCorrelationId(scope = "get-food-recommendation") {
+  return `${scope}:${randomUUID()}`;
+}
+
+function withCorrelationHeaders(headers = {}, correlationId = "") {
+  if (!correlationId) return { ...headers };
+  return {
+    ...headers,
+    [CORRELATION_HEADER]: correlationId,
+  };
+}
+
+function correlationMiddleware(serviceName) {
+  return (req, res, next) => {
+    const correlationId = getHeaderValue(req.headers) || createCorrelationId(serviceName);
+    req.correlationId = correlationId;
+    res.setHeader(CORRELATION_HEADER, correlationId);
+    console.log(`[${serviceName}] ${req.method} ${req.originalUrl} cid=${correlationId}`);
+    next();
+  };
+}
+
+app.use(correlationMiddleware("get-food-recommendation"));
+
+app.get("/get-food-recommendation-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use(
+  "/get-food-recommendation-api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec)
+);
 
 const geminiCache = new Map();
 const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -69,8 +266,11 @@ async function readBody(response) {
   try { return JSON.parse(raw); } catch { return raw; }
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
+async function fetchJson(url, options = {}, correlationId = "") {
+  const response = await fetch(url, {
+    ...options,
+    headers: withCorrelationHeaders(options?.headers || {}, correlationId),
+  });
   const data = await readBody(response);
   if (!response.ok) {
     const err = new Error((data && data.error) || `Request failed (${response.status})`);
@@ -185,7 +385,7 @@ function scoreListing(listing, topNames, topCategories) {
   return { score, reasons };
 }
 
-async function callGemini(topNames, topCategories, listings) {
+async function callGemini(topNames, topCategories, listings, correlationId = "") {
   if (!GEMINI_API_KEY) {
     return { used: false, reasoning: "No Gemini API key provided.", orderedIds: null };
   }
@@ -218,7 +418,7 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: withCorrelationHeaders({ "Content-Type": "application/json" }, correlationId),
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }]
         })
@@ -226,7 +426,7 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
     );
 
     const data = await readBody(response);
-    console.log("Gemini raw response:", JSON.stringify(data, null, 2));
+    console.log(`Gemini raw response cid=${correlationId || "n/a"}:`, JSON.stringify(data, null, 2));
 
     if (data?.error) {
       throw new Error(`Gemini API error ${data.error.code}: ${data.error.status}`);
@@ -240,24 +440,25 @@ Return ONLY a JSON array of IDs like: ["id1", "id2", "id3"]
 
     if (!Array.isArray(orderedIds)) throw new Error("Gemini did not return an array");
 
-    console.log("Gemini hit! ordered IDs:", orderedIds);
+    console.log(`Gemini hit! ordered IDs cid=${correlationId || "n/a"}:`, orderedIds);
     return {
       used: true,
       reasoning: `Gemini ranked up to ${orderedIds.length} listings based on your order history signals.`,
       orderedIds
     };
   } catch (err) {
-    console.error("Gemini error:", err.message);
+    console.error(`Gemini error cid=${correlationId || "n/a"}:`, err.message);
     return { used: false, reasoning: `Gemini error: ${err.message}`, orderedIds: null };
   }
 }
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", service: "composite-recommendation" });
+  res.json({ status: "ok", service: "composite-get-food-recommendation" });
 });
 
 app.get("/recommendations/:userId", async (req, res) => {
   const { userId } = req.params;
+  const correlationId = req.correlationId;
 
   const includeActive = parseBool(req.query.includeActive, true);
   const maxListings = Math.max(1, Math.min(200, Number(req.query.maxListings ?? 4) || 4));
@@ -276,18 +477,20 @@ app.get("/recommendations/:userId", async (req, res) => {
   let totalConfirmedOrders = 0;
   try {
     orderHistoryResponse = await fetchJson(
-      `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`
+      `${ORDER_SERVICE_URL}/orders/customer/${encodeURIComponent(userId)}/history?limit=20`,
+      {},
+      correlationId
     );
     orderHistory = Array.isArray(orderHistoryResponse?.orderHistory)
       ? orderHistoryResponse.orderHistory
       : [];
     totalConfirmedOrders = Number(orderHistoryResponse?.totalOrders ?? orderHistory.length) || orderHistory.length;
-    console.log("Order hit! order history:", orderHistory);
+    console.log(`Order hit! order history cid=${correlationId}:`, orderHistory);
   } catch (error) {
     orderHistoryResponse = { success: false, error: error.message, status: error.status || 500 };
     orderHistory = [];
     totalConfirmedOrders = 0;
-    console.log("Order hit! order history:", []);
+    console.log(`Order hit! order history cid=${correlationId}:`, []);
   }
 
   const stampsCount = totalConfirmedOrders;
@@ -295,29 +498,32 @@ app.get("/recommendations/:userId", async (req, res) => {
   // Step 2 — Inventory service
   let listings = [];
   try {
-    inventoryListings = await fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`);
+    inventoryListings = await fetchJson(`${INVENTORY_SERVICE_URL}/inventory/active`, {}, correlationId);
     listings = Array.isArray(inventoryListings) ? inventoryListings : [];
-    console.log("Inventory hit! listings:", listings);
+    console.log(`Inventory hit! listings cid=${correlationId}:`, listings);
   } catch (error) {
     inventoryListings = { success: false, error: error.message, status: error.status || 500 };
     listings = [];
-    console.log("Inventory hit! listings:", []);
+    console.log(`Inventory hit! listings cid=${correlationId}:`, []);
   }
 
   // Step 3 — Reward service
   try {
     const rewardPayload = await fetchJson(
-      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`
+      `${REWARD_SERVICE_URL}/reward/eligibility/${encodeURIComponent(userId)}?stampsCount=${encodeURIComponent(stampsCount)}`,
+      {},
+      correlationId
     );
     rewardEligibility = parseRewardEligibility(rewardPayload, stampsCount);
-    console.log("Rewards hit! reward eligibility:", rewardEligibility.eligible);
+    console.log(`Rewards hit! reward eligibility cid=${correlationId}:`, rewardEligibility.eligible);
   } catch (error) {
     rewardEligibility = { success: false, stampsCount, error: error.message, status: error.status || 500 };
-    console.log("Rewards hit! reward eligibility:", false);
+    console.log(`Rewards hit! reward eligibility cid=${correlationId}:`, false);
   }
 
+  // Step 4 — Gemini reranking (with cache)
   const { topNames, topCategories } = pickTopSignals(orderHistory, maxSignals);
-  console.log("Signals:", { topNames, topCategories });
+  console.log(`Signals cid=${correlationId}:`, { topNames, topCategories });
 
   const filteredListings = Array.isArray(inventoryListings)
     ? inventoryListings.filter((listing) => {
@@ -327,7 +533,7 @@ app.get("/recommendations/:userId", async (req, res) => {
       })
     : [];
 
-  // Step 4 — Gemini reranking (with cache)
+  
   const bypassCache = shouldBypassCache(req);
   const signalsKey = stableSignalsKey(topNames, topCategories);
   const cacheKey = `${userId}::${stampsCount}::${signalsKey}::${requestedListingIds.join(",") || "*"}`;
@@ -335,10 +541,10 @@ app.get("/recommendations/:userId", async (req, res) => {
   let gemini;
 
   if (cached && cached.expiresAt > Date.now()) {
-    console.log("Gemini cache hit for user:", userId);
+    console.log(`Gemini cache hit for user cid=${correlationId}:`, userId);
     gemini = cached.result;
   } else {
-    gemini = await callGemini(topNames, topCategories, filteredListings);
+    gemini = await callGemini(topNames, topCategories, filteredListings, correlationId);
     if (!bypassCache) {
       geminiCache.set(cacheKey, { result: gemini, expiresAt: Date.now() + GEMINI_CACHE_TTL_MS });
     }
@@ -406,5 +612,5 @@ app.get("/recommendations/:userId", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Composite recommendation service running on port ${PORT}`);
+  console.log(`Composite get-food-recommendation service running on port ${PORT}`);
 });
