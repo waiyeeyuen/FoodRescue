@@ -156,6 +156,8 @@ services:
     build:
       context: .
       dockerfile: services/refund-management/Dockerfile
+    ports:
+      - "3007:3007"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -163,8 +165,6 @@ services:
       PORT: 3007
       PAYMENT_SERVICE_URL: http://payment:3003
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-    env_file:
-      - ./services/payment/.env
 
   get-food-recommendation:
     build:

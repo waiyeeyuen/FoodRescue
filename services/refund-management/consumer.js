@@ -3,6 +3,8 @@ import express from "express";
 import amqplib from "amqplib";
 import Stripe from "stripe";
 import { randomUUID } from "crypto";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
 
 const app = express();
 
@@ -19,6 +21,155 @@ const MAX_RETRIES = 3;
 const CORRELATION_HEADER = "x-correlation-id";
 
 const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
+
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "FoodRescue Refund Management API",
+      version: "1.0.0",
+      description:
+        "Handles direct refund processing and background refund orchestration with RabbitMQ and Stripe.",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Direct refund-management service",
+      },
+      {
+        url: "http://localhost:8000",
+        description: "Kong API gateway",
+      },
+    ],
+    tags: [
+      { name: "Refund Management", description: "Refund management endpoints" },
+    ],
+    components: {
+      schemas: {
+        ErrorResponse: {
+          type: "object",
+          properties: {
+            error: { type: "string", example: "Failed to refund payment" },
+            details: {
+              nullable: true,
+              example: "Missing paymentIntentId",
+            },
+          },
+        },
+        RefundResponse: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            orderId: { type: "string", example: "order_123" },
+            paymentId: { type: "string", example: "pay_123" },
+            refundId: { type: "string", example: "re_123" },
+            refundStatus: { type: "string", example: "succeeded" },
+            refundAmountMinor: { type: "number", example: 500 },
+            refundAmount: { type: "number", example: 5.0 },
+            reward: {
+              nullable: true,
+              example: null,
+            },
+            paymentSyncWarning: { type: "string", example: "" },
+          },
+        },
+      },
+    },
+    paths: {
+      "/health": {
+        get: {
+          tags: ["Refund Management"],
+          summary: "Health check",
+          responses: {
+            200: {
+              description: "Refund management service is healthy",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      status: { type: "string", example: "ok" },
+                      service: {
+                        type: "string",
+                        example: "refund-management",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/refund-management/refund": {
+        post: {
+          tags: ["Refund Management"],
+          summary: "Process refund",
+          description:
+            "Processes a refund by resolving the payment record, refunding through Stripe, and syncing the refund result back to the payment service.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    orderId: { type: "string", example: "order_123" },
+                    paymentId: { type: "string", example: "pay_123" },
+                    amountMinor: { type: "number", example: 500 },
+                    amount: { type: "number", example: 500 },
+                    reason: {
+                      type: "string",
+                      example: "listing_deleted_refund",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Refund processed successfully",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/RefundResponse" },
+                },
+              },
+            },
+            400: {
+              description: "Invalid request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: {
+              description: "Payment record not found",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            500: {
+              description: "Failed to process refund",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 app.use(express.json());
 
@@ -54,6 +205,16 @@ function getPayloadCorrelationId(payload = {}, fallbackHeaders = {}) {
 }
 
 app.use(correlationMiddleware("refund-management"));
+
+app.get("/refund-management-api-docs.json", (req, res) => {
+  res.json(swaggerSpec);
+});
+
+app.use(
+  "/refund-management-api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec)
+);
 
 function publishToQueue(channel, queue, content, headers = {}) {
   channel.sendToQueue(queue, content, {
