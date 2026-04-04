@@ -177,7 +177,7 @@ README.md               This file
 
 ### Required Local File
 
-Place the Firebase Admin service account file here:
+Place the Firebase Admin service account file (serviceAccountKey.json) here:
 
 - `services/firebase/serviceAccountKey.json`
 
@@ -185,7 +185,9 @@ This file is mounted into the Firebase-backed containers by `docker-compose.yml`
 
 ### `.env` Files Used By The Current Repo
 
-The current local setup uses these `.env` files:
+The current local setup uses these `.env` files
+
+Using the values provided in FoodRescue Environment Variables.txt, create a .env file in each of the following directories:
 
 - `services/inventory/.env`
 - `services/payment/.env`
