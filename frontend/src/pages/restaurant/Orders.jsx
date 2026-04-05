@@ -77,6 +77,7 @@ function formatDateTime(value, createdAt) {
 function normalizeStatus(value, fallback = 'new') {
   const raw = String(value || fallback).trim().toLowerCase();
   if (raw === 'preparing') return 'ready';
+  if (['refund_pending', 'refund_failed', 'partially_refunded'].includes(raw)) return 'refunded';
   if (['new', 'ready', 'completed', 'refunded'].includes(raw)) return raw;
   return fallback;
 }
@@ -127,7 +128,10 @@ export default function RestaurantOrders() {
             new: Number(data?.counts?.new || 0),
             ready: Number(data?.counts?.ready || 0),
             completed: Number(data?.counts?.completed || 0),
-            refunded: Number(data?.counts?.refunded || 0),
+            refunded:
+              Number(data?.counts?.refunded || 0) +
+              Number(data?.counts?.refund_pending || 0) +
+              Number(data?.counts?.refund_failed || 0),
             all: Number(data?.counts?.all || 0),
           });
         }

@@ -69,6 +69,8 @@ services:
       - "3003:3003"
     environment:
       PLACE_ORDER_SERVICE_URL: http://place-order:4001
+      ORDER_SERVICE_URL: http://order:3004
+      NOTIFICATION_SERVICE_URL: http://notification:3006
       PORT: 3003
     env_file:
       - ./services/payment/.env
@@ -165,6 +167,8 @@ services:
       PORT: 3007
       PAYMENT_SERVICE_URL: http://payment:3003
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    env_file:
+      - ./services/payment/.env
 
   get-food-recommendation:
     build:

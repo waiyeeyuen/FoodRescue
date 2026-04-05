@@ -127,7 +127,10 @@ function normalizeStatusLabel(value, fallback = 'Active') {
 }
 
 function normalizeOrderItemStatus(value, fallback = 'new') {
-  const normalized = String(value || fallback).trim().toLowerCase();
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
 
   if (['new', 'pending', 'confirmed'].includes(normalized)) {
     return 'confirmed';
@@ -143,6 +146,14 @@ function normalizeOrderItemStatus(value, fallback = 'new') {
 
   if (['refunded', 'partially_refunded'].includes(normalized)) {
     return 'refunded';
+  }
+
+  if (['refund_pending'].includes(normalized)) {
+    return 'refund_pending';
+  }
+
+  if (['refund_failed'].includes(normalized)) {
+    return 'refund_failed';
   }
 
   if (['cancelled', 'canceled', 'expired', 'failed', 'missed', 'uncollected'].includes(normalized)) {
@@ -173,6 +184,14 @@ function getOrderBucket(row) {
     return 'refunded';
   }
 
+  if (normalized === 'refund_pending') {
+    return 'refunded';
+  }
+
+  if (normalized === 'refund_failed') {
+    return 'refunded';
+  }
+
   if (pickupPassed) {
     return 'uncollected';
   }
@@ -182,6 +201,7 @@ function getOrderBucket(row) {
 
 function getStatusBadge(row) {
   const bucket = getOrderBucket(row);
+  const normalized = normalizeOrderItemStatus(row?.status, 'confirmed');
 
   if (bucket === 'completed') {
     return {
@@ -208,6 +228,20 @@ function getStatusBadge(row) {
     return {
       label: 'Uncollected',
       className: 'bg-slate-200 text-slate-700',
+    };
+  }
+
+  if (normalized === 'refund_failed') {
+    return {
+      label: 'Refund Failed',
+      className: 'bg-rose-100 text-rose-800',
+    };
+  }
+
+  if (normalized === 'refund_pending') {
+    return {
+      label: 'Refund Pending',
+      className: 'bg-amber-100 text-amber-800',
     };
   }
 

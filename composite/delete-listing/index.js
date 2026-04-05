@@ -448,11 +448,72 @@ function getPositiveInteger(value, fallback = 0) {
   return numeric;
 }
 
+function normalizeOrderItemStatus(value, fallback = "new") {
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+  if (!normalized) return fallback;
+  if (normalized === "canceled") return "cancelled";
+  return normalized;
+}
+
+function isDeleteRefundAlreadyHandled(status) {
+  const normalized = normalizeOrderItemStatus(status, "new");
+  return ["refund_pending", "refunded", "cancelled"].includes(normalized);
+}
+
 function sumListingQuantity(items) {
   return (Array.isArray(items) ? items : []).reduce((sum, item) => {
     const quantity = getPositiveInteger(item?.quantity, 1);
     return sum + Math.max(1, quantity);
   }, 0);
+}
+
+function sanitizeAffectedOrdersForDelete(affectedOrders) {
+  const orders = Array.isArray(affectedOrders?.orders) ? affectedOrders.orders : [];
+
+  const sanitizedOrders = orders
+    .map((order) => {
+      const refundableItems = (Array.isArray(order?.items) ? order.items : []).filter(
+        (item) => !isDeleteRefundAlreadyHandled(item?.status)
+      );
+
+      if (refundableItems.length === 0) {
+        return null;
+      }
+
+      const totalRefundAmountMinor = refundableItems.reduce(
+        (sum, item) => sum + Math.max(0, Number(item?.refundAmountMinor || 0)),
+        0
+      );
+
+      if (totalRefundAmountMinor <= 0) {
+        return null;
+      }
+
+      return {
+        ...order,
+        items: refundableItems,
+        totalRefundAmountMinor,
+        totalRefundAmount: Number((totalRefundAmountMinor / 100).toFixed(2)),
+      };
+    })
+    .filter(Boolean);
+
+  const totalRefundAmountMinor = sanitizedOrders.reduce(
+    (sum, order) => sum + Math.max(0, Number(order?.totalRefundAmountMinor || 0)),
+    0
+  );
+
+  return {
+    ...affectedOrders,
+    total: sanitizedOrders.length,
+    totalRefundAmountMinor,
+    totalRefundAmount: Number((totalRefundAmountMinor / 100).toFixed(2)),
+    orders: sanitizedOrders,
+  };
 }
 
 function summarizeAffectedOrders(affectedOrders) {
@@ -649,13 +710,13 @@ async function loadDeleteContext({
   correlationId = "",
 }) {
   const listing = await getListingForRestaurant({ listingId, restaurantId, correlationId });
-  const affectedOrders = await getAffectedOrders({
+  const affectedOrders = sanitizeAffectedOrdersForDelete(await getAffectedOrders({
     listingId,
     restaurantId,
     restaurantName,
     includeCompleted: true,
     correlationId,
-  });
+  }));
 
   return { listing, affectedOrders };
 }

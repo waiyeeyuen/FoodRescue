@@ -299,6 +299,31 @@ async function syncRefundRecord({
   }, correlationId);
 }
 
+async function syncFailedRefundRecord({
+  paymentId,
+  refundAmount,
+  refundReason,
+  correlationId = "",
+}) {
+  if (!paymentId) return "";
+
+  try {
+    await syncRefundRecord({
+      paymentId,
+      refundId: "",
+      refundStatus: "failed",
+      refundAmount: Number(refundAmount ?? 0) || 0,
+      refundReason: String(refundReason || "refund_failed"),
+      correlationId,
+    });
+    return "";
+  } catch (error) {
+    const warning = error?.message || String(error);
+    console.warn("[refund-management] Failed refund sync warning:", warning);
+    return warning;
+  }
+}
+
 async function resolveRefundContext(payload = {}, correlationId = "") {
   let payment = null;
 
@@ -468,8 +493,10 @@ function publishRefundResult(channel, payload, override = {}) {
     orderId: payload?.orderId || "",
     paymentId: payload?.paymentId || "",
     userId: payload?.userId || "",
+    currency: payload?.currency || "sgd",
     status: payload?.status || "",
     fullRefund: Boolean(payload?.fullRefund),
+    confirmedItems: Array.isArray(payload?.confirmedItems) ? payload.confirmedItems : [],
     insufficientItems: Array.isArray(payload?.insufficientItems) ? payload.insufficientItems : [],
     refundAmount: Number(payload?.refundAmount ?? payload?.amountTotal ?? 0) || 0,
     refundId: "",
@@ -612,10 +639,17 @@ async function startConsumer() {
     if (!paymentIntentId) {
       console.error(`[refund-management] Missing paymentIntentId; sending to DLQ cid=${correlationId || "n/a"}`);
       sendToDlq(channel, msg, "missing_payment_intent_id");
+      const paymentSyncWarning = await syncFailedRefundRecord({
+        paymentId,
+        refundAmount: amount,
+        refundReason: "Missing paymentIntentId",
+        correlationId,
+      });
       publishRefundResult(channel, queuePayload, {
         paymentId,
         refundStatus: "failed",
         error: "Missing paymentIntentId",
+        paymentSyncWarning,
       });
       channel.ack(msg);
       return;
@@ -646,10 +680,17 @@ async function startConsumer() {
 
       if (result.status >= 400 && result.status < 500) {
         console.warn(`[refund-management] Business failure cid=${correlationId || "n/a"} (ack):`, result.status, result.errorText);
+        const paymentSyncWarning = await syncFailedRefundRecord({
+          paymentId,
+          refundAmount: amount,
+          refundReason: reason || result.errorText,
+          correlationId,
+        });
         publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: String(result.errorText || "").slice(0, 1000),
+          paymentSyncWarning,
         });
         channel.ack(msg);
         return;
@@ -669,10 +710,17 @@ async function startConsumer() {
           "x-error": `refund_failed_${result.status}`,
           "x-response": String(result.errorText || "").slice(0, 1000),
         });
+        const paymentSyncWarning = await syncFailedRefundRecord({
+          paymentId,
+          refundAmount: amount,
+          refundReason: reason || `refund_failed_${result.status}`,
+          correlationId,
+        });
         publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: `refund_failed_${result.status}`,
+          paymentSyncWarning,
         });
       }
 
@@ -691,10 +739,17 @@ async function startConsumer() {
           "x-retry-count": retryCount,
           "x-error": error?.message || String(error),
         });
+        const paymentSyncWarning = await syncFailedRefundRecord({
+          paymentId,
+          refundAmount: amount,
+          refundReason: error?.message || String(error),
+          correlationId,
+        });
         publishRefundResult(channel, queuePayload, {
           paymentId,
           refundStatus: "failed",
           error: error?.message || String(error),
+          paymentSyncWarning,
         });
       }
 

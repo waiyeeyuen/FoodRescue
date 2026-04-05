@@ -613,6 +613,148 @@ async function requestRefund({
   return resolvedCorrelationId;
 }
 
+const REFUND_SUCCESS_STATUSES = new Set(["succeeded", "success", "completed"]);
+const REFUND_PENDING_STATUSES = new Set(["pending", "processing", "requires_action"]);
+
+function getRefundLifecycle(refundStatus) {
+  const normalizedRefundStatus = String(refundStatus || "").trim().toLowerCase();
+
+  if (REFUND_SUCCESS_STATUSES.has(normalizedRefundStatus)) {
+    return "succeeded";
+  }
+
+  if (REFUND_PENDING_STATUSES.has(normalizedRefundStatus)) {
+    return "pending";
+  }
+
+  return "failed";
+}
+
+function getOrderTotalPrice(items = []) {
+  return Number(
+    items
+      .reduce((sum, item) => {
+        const quantity = Number(item?.quantity ?? 1);
+        const unitAmountMinor = Number(item?.unitAmount ?? item?.originalUnitAmount ?? 0);
+        return sum + (unitAmountMinor / 100) * (Number.isFinite(quantity) ? quantity : 0);
+      }, 0)
+      .toFixed(2)
+  );
+}
+
+function buildRefundOutcomeItems({
+  status,
+  fullRefund,
+  confirmedItems,
+  insufficientItems,
+  refundLifecycle,
+  refundStatus,
+  refundId,
+  error,
+}) {
+  const resolvedConfirmedItems = Array.isArray(confirmedItems) ? confirmedItems : [];
+  const resolvedInsufficientItems = Array.isArray(insufficientItems) ? insufficientItems : [];
+  const refundOutcomeStatus =
+    refundLifecycle === "succeeded"
+      ? "refunded"
+      : refundLifecycle === "pending"
+        ? "refund_pending"
+        : "refund_failed";
+  const keepConfirmedItems = status === "partial" && !fullRefund;
+
+  const decorateItem = (item, fulfillmentStatus) => {
+    const quantity = Number(item?.quantity ?? 1);
+    const itemRefundAmountMinor =
+      Number(item?.itemRefundAmount ?? 0) ||
+      Number(item?.unitAmount ?? item?.originalUnitAmount ?? 0) * (Number.isFinite(quantity) ? quantity : 0);
+
+    return {
+      ...item,
+      fulfillmentStatus,
+      refundStatus: String(refundStatus || ""),
+      refundId: String(refundId || ""),
+      refundError: String(error || ""),
+      refundAmount: Number((itemRefundAmountMinor / 100).toFixed(2)),
+    };
+  };
+
+  const keptItems = resolvedConfirmedItems.map((item) =>
+    decorateItem(item, keepConfirmedItems ? "new" : refundOutcomeStatus)
+  );
+  const refundedItems = resolvedInsufficientItems.map((item) =>
+    decorateItem(item, refundOutcomeStatus)
+  );
+
+  return [...keptItems, ...refundedItems];
+}
+
+async function persistRefundOutcomeOrder({
+  orderId,
+  userId,
+  currency,
+  status,
+  fullRefund,
+  confirmedItems,
+  insufficientItems,
+  refundAmount,
+  refundId,
+  refundStatus,
+  error,
+  correlationId,
+}) {
+  const refundLifecycle = getRefundLifecycle(refundStatus);
+  const refundSuccessful = refundLifecycle === "succeeded";
+  const refundPending = refundLifecycle === "pending";
+  const items = buildRefundOutcomeItems({
+    status,
+    fullRefund,
+    confirmedItems,
+    insufficientItems,
+    refundLifecycle,
+    refundStatus,
+    refundId,
+    error,
+  });
+
+  if (!orderId || !userId) {
+    throw new Error("orderId and userId are required to persist refund outcome");
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error(`No order items available to persist refund outcome for ${orderId}`);
+  }
+
+  const orderStatus =
+    status === "partial" && !fullRefund
+      ? (refundSuccessful ? "partially_refunded" : refundPending ? "refund_pending" : "refund_failed")
+      : (refundSuccessful ? "refunded" : refundPending ? "refund_pending" : "refund_failed");
+
+  let notes = `Automatic refund failed for out-of-stock order. Reason: ${String(error || refundStatus || "unknown").trim() || "unknown"}.`;
+  if (refundSuccessful) {
+    notes = `Automatic refund completed for out-of-stock order. Refund amount: ${Number(refundAmount || 0) / 100}.`;
+  } else if (refundPending) {
+    notes = `Automatic refund is pending for out-of-stock order. Refund amount: ${Number(refundAmount || 0) / 100}. Current status: ${String(refundStatus || "pending").trim() || "pending"}.`;
+  }
+
+  return fetchJson(
+    `${ORDER_SERVICE_URL}/orders`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderId,
+        customerId: userId,
+        items,
+        totalPrice: getOrderTotalPrice(items),
+        currency: currency || "sgd",
+        status: orderStatus,
+        notes,
+      }),
+    },
+    correlationId
+  );
+}
+
 async function processInventoryResultMessage(payload) {
   const {
     orderId,
@@ -734,14 +876,18 @@ async function processInventoryResultMessage(payload) {
 async function processRefundResultMessage(payload) {
   const {
     orderId,
+    paymentId,
     userId,
+    currency,
     status,
     fullRefund,
+    confirmedItems,
     refundAmount,
     refundId,
     refundStatus,
     insufficientItems,
     correlationId,
+    error,
   } = payload || {};
 
   console.log(
@@ -753,9 +899,50 @@ async function processRefundResultMessage(payload) {
     throw new Error("orderId, userId, and status are required");
   }
 
-  const normalizedRefundStatus = String(refundStatus || "").toLowerCase();
-  if (!["succeeded", "success", "completed"].includes(normalizedRefundStatus)) {
+  const refundLifecycle = getRefundLifecycle(refundStatus);
+  await persistRefundOutcomeOrder({
+    orderId,
+    userId,
+    currency,
+    status,
+    fullRefund,
+    confirmedItems,
+    insufficientItems,
+    refundAmount,
+    refundId,
+    refundStatus,
+    error,
+    correlationId,
+  });
+
+  if (refundLifecycle === "failed") {
     console.warn(`[place-order] Refund not successful for order ${orderId}: ${refundStatus || "unknown"}`);
+    fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+      userId,
+      type: "ORDER_REFUND_FAILED",
+      orderId,
+      refundAmount,
+      refundId,
+      refundStatus,
+      message:
+        "Your order could not be fulfilled, and the automatic refund did not complete. Please contact support if the refund does not appear shortly.",
+    }, correlationId);
+    console.log(`[place-order] 📨 ORDER_REFUND_FAILED notification fired for ${userId} cid=${correlationId || "n/a"}`);
+    return;
+  }
+
+  if (refundLifecycle === "pending") {
+    fireAndForget(`${NOTIFICATION_SERVICE_URL}/notifications/send`, {
+      userId,
+      type: "ORDER_REFUND_PENDING",
+      orderId,
+      refundAmount,
+      refundId,
+      refundStatus,
+      message:
+        "Your order could not be fulfilled. The refund has been initiated and is still being processed by the payment provider.",
+    }, correlationId);
+    console.log(`[place-order] 📨 ORDER_REFUND_PENDING notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;
   }
 
@@ -768,6 +955,7 @@ async function processRefundResultMessage(payload) {
       refundAmount,
       refundId,
       refundStatus,
+      paymentId,
     }, correlationId);
     console.log(`[place-order] 📨 ORDER_PARTIAL notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;
@@ -781,6 +969,7 @@ async function processRefundResultMessage(payload) {
       refundAmount,
       refundId,
       refundStatus,
+      paymentId,
     }, correlationId);
     console.log(`[place-order] 📨 ORDER_REFUNDED notification fired for ${userId} cid=${correlationId || "n/a"}`);
     return;

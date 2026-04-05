@@ -431,7 +431,7 @@ function getItemField(item, ...keys) {
 
 function normalizeItemStatus(value, fallback = 'new') {
   const normalized = String(value || fallback).trim().toLowerCase();
-  if (['new', 'pending', 'ready', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded'].includes(normalized)) {
+  if (['new', 'pending', 'ready', 'preparing', 'completed', 'cancelled', 'canceled', 'refunded', 'refund_pending', 'refund_failed'].includes(normalized)) {
     if (normalized === 'preparing') return 'ready'
     return normalized === 'canceled' ? 'cancelled' : normalized;
   }
@@ -459,6 +459,14 @@ function deriveOrderStatusFromItems(items, currentStatus = 'confirmed') {
     return 'refunded'
   }
 
+  if (statuses.some((status) => status === 'refund_failed')) {
+    return 'refund_failed'
+  }
+
+  if (statuses.some((status) => status === 'refund_pending')) {
+    return 'refund_pending'
+  }
+
   if (statuses.some((status) => isRefundedLikeStatus(status))) {
     return 'partially_refunded'
   }
@@ -471,7 +479,16 @@ function deriveOrderStatusFromItems(items, currentStatus = 'confirmed') {
 }
 
 function normalizeStoredItem(item, orderStatus = 'pending_payment') {
-  const fallbackStatus = orderStatus === 'confirmed' ? 'new' : 'pending';
+  const fallbackStatus =
+    orderStatus === 'confirmed'
+      ? 'new'
+      : orderStatus === 'refunded'
+        ? 'refunded'
+        : orderStatus === 'refund_pending'
+          ? 'refund_pending'
+        : orderStatus === 'refund_failed'
+          ? 'refund_failed'
+          : 'pending';
   return {
     ...item,
     itemId: getItemField(item, 'itemId', 'listingId', 'id', 'Id') ?? '',
