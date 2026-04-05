@@ -260,6 +260,24 @@ Then place the generated webhook secret in:
 
 - `services/payment/.env`
 
+## Test Accounts
+
+You are able to create your own accounts, however below are some test accounts that you can use.
+
+### User
+Email: test@gmail.com
+Password: test
+
+### Restaurant
+Email: restaurant1@gmail.com
+Password: test
+
+Email: restaurant2@gmail.com
+Password: test
+
+Email: restaurant3@gmail.com
+Password: test
+
 ## Access URLs
 
 - Frontend: `http://localhost:5173`
