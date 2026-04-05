@@ -278,6 +278,8 @@ Password: test
 Email: restaurant3@gmail.com
 Password: test
 
+Due to Twilo limitations, only one phone number can be added as a verfied phone number. Thus for testing purposes, you can use the account of test@gmail.com and password test.
+
 ## Access URLs
 
 - Frontend: `http://localhost:5173`
