@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { randomUUID } from 'crypto'
-import { db } from './firebaseAdmin.js'
+import { db } from '../firebase/firebaseAdmin.js'
 import swaggerJsdoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
 
