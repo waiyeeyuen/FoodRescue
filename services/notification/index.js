@@ -1,6 +1,8 @@
 // index.js
 import express from 'express';
 import { randomUUID } from 'crypto';
+import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerUi from 'swagger-ui-express';
 import { connectRabbitMQ } from './rabbitmq.js';
 import { handleEvent, getTitle, getMessage, getChannel } from './handler.js';
 import { resolveNotificationDelivery } from './accountClient.js';
@@ -19,6 +21,241 @@ app.use(express.json());
 const NOTIFICATION_CACHE_TTL_MS = 30 * 1000;
 const notificationCache = new Map();
 const CORRELATION_HEADER = 'x-correlation-id';
+const PORT = process.env.PORT || 3006;
+
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'FoodRescue Notification Service API',
+      version: '1.0.0',
+      description: 'Notification listing, bulk-read, and send endpoints for the FoodRescue notification service.',
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: 'Direct notification service',
+      },
+      {
+        url: 'http://localhost:8000',
+        description: 'Kong API gateway',
+      },
+    ],
+    tags: [
+      {
+        name: 'Notification',
+        description: 'Notification service endpoints',
+      },
+    ],
+    components: {
+      schemas: {
+        Notification: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', example: '2m1A9sPQ7mN6JkYQ0x4N' },
+            userId: { type: 'string', example: 'user_123' },
+            type: { type: 'string', example: 'ORDER_EXPIRED' },
+            title: { type: 'string', example: 'Order expired' },
+            message: { type: 'string', example: 'Your order has expired.' },
+            smsBody: { type: 'string', example: 'Your order has expired.' },
+            channel: { type: 'string', example: 'IN_APP' },
+            userPhone: { type: 'string', nullable: true, example: '+6591234567' },
+            status: { type: 'string', example: 'DELIVERED' },
+            read: { type: 'boolean', example: false },
+            readAt: { type: 'string', format: 'date-time', nullable: true },
+            orderId: { type: 'string', nullable: true, example: 'ord_001' },
+            listingId: { type: 'string', nullable: true, example: 'lst_001' },
+            preferenceReason: { type: 'string', nullable: true, example: 'preferred-channel:IN_APP' },
+            createdAt: { type: 'string', format: 'date-time', nullable: true },
+          },
+        },
+        ReadAllResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            updated: { type: 'integer', example: 4 },
+            stale: { type: 'boolean', example: true },
+          },
+          required: ['success', 'updated'],
+        },
+        SendNotificationRequest: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string', example: 'user_123' },
+            type: { type: 'string', example: 'ORDER_EXPIRED' },
+            orderId: { type: 'string', nullable: true, example: 'ord_001' },
+            listingId: { type: 'string', nullable: true, example: 'lst_001' },
+            insufficientItems: {
+              type: 'array',
+              items: { type: 'string' },
+              example: ['Bread', 'Milk'],
+            },
+            userPhone: { type: 'string', nullable: true, example: '+6591234567' },
+            phone: { type: 'string', nullable: true, example: '+6591234567' },
+            title: { type: 'string', nullable: true, example: 'Order update' },
+            message: { type: 'string', nullable: true, example: 'Your order has expired.' },
+            channel: { type: 'string', nullable: true, example: 'SMS' },
+            smsBody: { type: 'string', nullable: true, example: 'Your order has expired.' },
+            accountKind: { type: 'string', nullable: true, example: 'auto' },
+          },
+          required: ['userId', 'type'],
+        },
+        SendNotificationResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            status: { type: 'string', example: 'DELIVERED' },
+            channel: { type: 'string', example: 'SMS' },
+            notificationId: { type: 'string', example: '2m1A9sPQ7mN6JkYQ0x4N' },
+            reason: { type: 'string', nullable: true, example: 'preferred-channel:SMS' },
+          },
+          required: ['success', 'status', 'channel'],
+        },
+        ErrorResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: false },
+            error: { type: 'string', example: 'Internal Server Error' },
+          },
+          required: ['success', 'error'],
+        },
+      },
+    },
+    paths: {
+      '/notifications/{user_id}': {
+        get: {
+          tags: ['Notification'],
+          operationId: 'listNotifications',
+          summary: 'Get notifications for a user',
+          parameters: [
+            {
+              in: 'path',
+              name: 'user_id',
+              required: true,
+              schema: { type: 'string', example: 'user_123' },
+            },
+          ],
+          responses: {
+            200: {
+              description: 'Notifications retrieved successfully',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'array',
+                    items: { $ref: '#/components/schemas/Notification' },
+                  },
+                },
+              },
+              links: {
+                MarkAllAsRead: {
+                  operationId: 'markAllNotificationsRead',
+                  parameters: {
+                    user_id: '$request.path.user_id',
+                  },
+                  description: 'Mark all notifications as read for the same user.',
+                },
+              },
+            },
+            500: {
+              description: 'Server error',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/notifications/{user_id}/read-all': {
+        patch: {
+          tags: ['Notification'],
+          operationId: 'markAllNotificationsRead',
+          summary: 'Mark all user notifications as read',
+          parameters: [
+            {
+              in: 'path',
+              name: 'user_id',
+              required: true,
+              schema: { type: 'string', example: 'user_123' },
+            },
+          ],
+          responses: {
+            200: {
+              description: 'Bulk-read operation completed',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ReadAllResponse' },
+                },
+              },
+            },
+            500: {
+              description: 'Server error',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+      '/notifications/send': {
+        post: {
+          tags: ['Notification'],
+          operationId: 'sendNotificationNow',
+          summary: 'Create and dispatch a notification',
+          parameters: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SendNotificationRequest' },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: 'Notification processed and delivery attempted',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/SendNotificationResponse' },
+                },
+              },
+              links: {
+                GetNotificationsForUser: {
+                  operationId: 'listNotifications',
+                  parameters: {
+                    user_id: '$request.body#/userId',
+                  },
+                  description: 'Fetch the latest notifications for the same user.',
+                },
+                MarkAllAsRead: {
+                  operationId: 'markAllNotificationsRead',
+                  parameters: {
+                    user_id: '$request.body#/userId',
+                  },
+                  description: 'Mark all notifications as read for the same user.',
+                },
+              },
+            },
+            500: {
+              description: 'Server error',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/ErrorResponse' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  apis: [],
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 function getHeaderValue(headers = {}, key = CORRELATION_HEADER) {
   const value = headers?.[key] ?? headers?.[String(key).toLowerCase()];
@@ -44,6 +281,11 @@ function correlationMiddleware(serviceName) {
 }
 
 app.use(correlationMiddleware('notification'));
+
+app.get('/notification-api-docs.json', (req, res) => {
+  res.json(swaggerSpec);
+});
+app.use('/notification-api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 function toDateValue(value) {
   if (!value) return null;
@@ -336,8 +578,6 @@ app.post('/notifications/send', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-const PORT = process.env.PORT || 3006;
 
 startConsumer().catch(console.error);
 app.listen(PORT, () => console.log(`Notifications service on :${PORT}`));
