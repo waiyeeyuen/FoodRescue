@@ -1,0 +1,59 @@
+{
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "routePrefix": "/",
+      "framework": "vite"
+    },
+    "account": {
+      "entrypoint": "services/account",
+      "routePrefix": "/_/account",
+      "framework": "express"
+    },
+    "inventory": {
+      "entrypoint": "services/inventory",
+      "routePrefix": "/_/inventory",
+      "framework": "express"
+    },
+    "notification": {
+      "entrypoint": "services/notification",
+      "routePrefix": "/_/notification",
+      "framework": "express"
+    },
+    "order": {
+      "entrypoint": "services/order",
+      "routePrefix": "/_/order",
+      "framework": "express"
+    },
+    "payment": {
+      "entrypoint": "services/payment",
+      "routePrefix": "/_/payment",
+      "framework": "express"
+    },
+    "reward": {
+      "entrypoint": "services/reward",
+      "routePrefix": "/_/reward",
+      "framework": "express"
+    },
+    "place-order": {
+      "entrypoint": "composite/place-order",
+      "routePrefix": "/_/place-order",
+      "framework": "express"
+    },
+    "delete-listing": {
+      "entrypoint": "composite/delete-listing",
+      "routePrefix": "/_/delete-listing",
+      "framework": "express"
+    },
+    "recommendation": {
+      "entrypoint": "composite/get-food-recommendation",
+      "routePrefix": "/_/recommendation",
+      "framework": "express"
+    },
+    "refund-management": {
+      "entrypoint": "services/refund-management",
+      "routePrefix": "/_/refund-management",
+      "framework": "express"
+    }
+  }
+}
